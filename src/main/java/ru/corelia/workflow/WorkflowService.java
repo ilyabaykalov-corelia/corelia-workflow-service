@@ -10,6 +10,7 @@ import ru.corelia.config.CoreliaConfig;
 import ru.corelia.http.ApiException;
 import ru.corelia.integration.*;
 import ru.corelia.profile.ProductProfile;
+import ru.corelia.support.LogJson;
 
 import tools.jackson.databind.JsonNode;
 import tools.jackson.databind.node.ObjectNode;
@@ -247,6 +248,14 @@ public class WorkflowService {
                         .filter(n -> n.path("isIncident").asBoolean())
                         .findFirst()
                         .orElse(object());
+        if (instance.path("isIncident").asBoolean() || !activity.isEmpty())
+            LogJson.info(
+                    "Platform V process incident",
+                    object(
+                            "processInstanceId", text(instance, "id"),
+                            "state", text(instance, "state"),
+                            "definitionId", first(activity, "definitionId", "name"),
+                            "error", text(activity, "error")));
         if (instance.path("isIncident").asBoolean() || !activity.isEmpty())
             throw new ApiException(
                     502,
