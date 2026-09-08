@@ -10,6 +10,7 @@ import ru.corelia.cache.UserCache;
 import ru.corelia.config.CoreliaConfig;
 import ru.corelia.http.ApiException;
 import ru.corelia.integration.BpmClient;
+import ru.corelia.support.LogJson;
 import ru.corelia.support.ParallelCalls;
 
 import tools.jackson.databind.JsonNode;
@@ -89,6 +90,12 @@ public class TaskGateway {
             return bpm.taskList("/system/v1/user-tasks/" + encode(id), null, Map.of(), auth);
         } catch (ApiException error) {
             if (!BpmClient.unavailable(error)) throw error;
+            LogJson.info(
+                    "BPMU Task List task detail was not available",
+                    object(
+                            "taskId", id,
+                            "status", error.status(),
+                            "message", error.getMessage()));
         }
         return searchStatuses(ACTIVE, SCOPES, object(), auth).stream()
                 .filter(task -> id.equals(text(task, "id")))
@@ -104,11 +111,23 @@ public class TaskGateway {
             return bpm.system("/system/v6/usertasks/" + id, null, auth);
         } catch (ApiException error) {
             if (!BpmClient.unavailable(error)) throw error;
+            LogJson.info(
+                    "BPMX usertask detail was not available, falling back to BPMU detail",
+                    object(
+                            "taskId", text(task, "id"),
+                            "status", error.status(),
+                            "message", error.getMessage()));
         }
         try {
             return bpm.taskList("/system/v1/user-tasks/" + id, null, Map.of(), auth);
         } catch (ApiException error) {
             if (!BpmClient.unavailable(error)) throw error;
+            LogJson.info(
+                    "BPMU Task List task detail was not available",
+                    object(
+                            "taskId", text(task, "id"),
+                            "status", error.status(),
+                            "message", error.getMessage()));
         }
         return task;
     }
