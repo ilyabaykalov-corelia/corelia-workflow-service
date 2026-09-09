@@ -42,9 +42,18 @@ public class WorkflowController {
 
     @PostMapping("/tasks/search")
     public JsonNode search(HttpServletRequest r) {
-        JsonNode body = requests.body(r);
-        String scope = text(body, "scope");
-        return tasks.search(body.path("filters"), scope.isEmpty() ? null : scope, requests.auth(r));
+        return workflow.search(requests.body(r), requests.auth(r));
+    }
+
+    @GetMapping("/documents/{type}/{id}/workflow")
+    public JsonNode documentWorkflow(
+            @PathVariable String type, @PathVariable String id, HttpServletRequest r) {
+        return workflow.documentWorkflow(type, id, requests.auth(r));
+    }
+
+    @GetMapping("/tasks/summary")
+    public JsonNode summary(HttpServletRequest r) {
+        return workflow.summary(requests.auth(r));
     }
 
     @GetMapping("/tasks/{id}")

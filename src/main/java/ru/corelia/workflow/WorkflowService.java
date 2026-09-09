@@ -23,14 +23,91 @@ public class WorkflowService {
     private final BpmClient bpm;
     private final DataSpaceClient data;
     private final TaskGateway tasks;
+    private final TaskPresentation presentation;
     private final CoreliaConfig config;
 
     public WorkflowService(
-            BpmClient bpm, DataSpaceClient data, TaskGateway tasks, CoreliaConfig config) {
+            BpmClient bpm,
+            DataSpaceClient data,
+            TaskGateway tasks,
+            TaskPresentation presentation,
+            CoreliaConfig config) {
         this.bpm = bpm;
         this.data = data;
         this.tasks = tasks;
+        this.presentation = presentation;
         this.config = config;
+    }
+
+    /** Возвращает современный контракт очереди задач Corelia. */
+    public JsonNode search(JsonNode body, AuthContext auth) {
+        String queue = text(body, "queue").toUpperCase(Locale.ROOT);
+        String requestedStatus = text(body, "status").toUpperCase(Locale.ROOT);
+        String query = text(body, "query").toLowerCase(Locale.ROOT);
+        Set<String> statuses = Set.of("NEW", "ASSIGNED", "STARTED", "COMPLETED", "ABORTED");
+        List<JsonNode> found;
+        if (queue.equals("MY") || queue.equals("AVAILABLE")) {
+            List<String> selected =
+                    statuses.contains(requestedStatus)
+                            ? List.of(requestedStatus)
+                            : queue.equals("AVAILABLE")
+                                    ? List.of("NEW", "ASSIGNED")
+                                    : List.of("ASSIGNED", "STARTED");
+            found =
+                    tasks.searchStatuses(selected, List.of("EXECUTOR"), object(), auth).stream()
+                            .filter(
+                                    task ->
+                                            queue.equals("MY")
+                                                    ? auth.login().equals(login(task))
+                                                    : login(task).isEmpty())
+                            .toList();
+        } else {
+            ObjectNode filters = object();
+            if (statuses.contains(requestedStatus))
+                filters.set("status", object("value", requestedStatus));
+            found = tasks.broad(filters, auth);
+        }
+        List<JsonNode> visible =
+                found.stream()
+                        .filter(task -> query.isEmpty() || searchText(task).contains(query))
+                        .map(task -> decorateTask(task, auth))
+                        .toList();
+        return object("items", visible, "total", visible.size());
+    }
+
+    public JsonNode summary(AuthContext auth) {
+        return object(
+                "my", number(search(object("queue", "MY"), auth), "total", 0),
+                "available", number(search(object("queue", "AVAILABLE"), auth), "total", 0));
+    }
+
+    /** Контекст процесса для карточки: активная задача, действия и исполнитель. */
+    public JsonNode documentWorkflow(String type, String documentId, AuthContext auth) {
+        PdsContract.requireType(type);
+        JsonNode task =
+                tasks.byDocument(documentId, auth).stream()
+                        .min(
+                                Comparator.comparingInt(
+                                        value -> {
+                                            return switch (text(value, "status")) {
+                                                case "STARTED" -> 0;
+                                                case "ASSIGNED" -> 1;
+                                                case "NEW" -> 2;
+                                                default -> 3;
+                                            };
+                                        }))
+                        .orElse(null);
+        if (task == null) return object("task", null, "availableActions", List.of(), "executor", null);
+        return object(
+                "task", task,
+                "availableActions", actions(task, auth),
+                "executor", presentation.executor(task, auth));
+    }
+
+    private JsonNode decorateTask(JsonNode task, AuthContext auth) {
+        ObjectNode result = copy(task);
+        result.set("availableActions", array(actions(task, auth)));
+        return result;
     }
 
     public JsonNode process(String id, AuthContext auth) {
@@ -169,15 +246,75 @@ public class WorkflowService {
                                                 400, "Действие недоступно для текущей задачи"));
         if (!text(task, "status").equals("STARTED")) start(id, auth);
         ObjectNode completion = copy(selected.path("result"));
-        if (List.of("взять в работу", "take_on")
-                        .contains(text(selected, "label").toLowerCase(Locale.ROOT))
-                || text(selected, "code").equalsIgnoreCase("take_on"))
+        if (takeInWork(selected))
             completion.put("assignee", auth.login());
         ObjectNode body = clientFields(id, auth);
         body.set("parameters", completion);
         JsonNode result = bpm.system("/system/v6/usertasks:complete", body, auth);
         assertSuccess(result, id);
+        String documentId = attribute(task, "documentId");
+        awaitDocumentStatus(documentId, text(completion, "approvalStatus"), auth);
+        if (takeInWork(selected)) startFollowUp(documentId, id, auth);
         return result;
+    }
+
+    private void startFollowUp(String documentId, String completedTaskId, AuthContext auth) {
+        for (int attempt = 0; attempt < 20; attempt++) {
+            JsonNode next =
+                    tasks.byDocument(documentId, auth).stream()
+                            .filter(task -> !completedTaskId.equals(text(task, "id")))
+                            .filter(task -> Set.of("NEW", "ASSIGNED").contains(text(task, "status")))
+                            .findFirst()
+                            .orElse(null);
+            if (next != null) {
+                JsonNode started = bpm.system("/system/v6/usertasks:start", clientFields(text(next, "id"), auth), auth);
+                assertSuccess(started, text(next, "id"));
+                return;
+            }
+            if (attempt < 19) pause(250);
+        }
+    }
+
+    private static boolean takeInWork(JsonNode action) {
+        return Set.of("взять в работу", "take_on")
+                        .contains(text(action, "label").toLowerCase(Locale.ROOT))
+                || text(action, "code").equalsIgnoreCase("take_on")
+                || text(action.path("result"), "approvalStatus").equalsIgnoreCase("IN_WORK");
+    }
+
+    /** Ждёт, пока асинхронное обновление карточки из БП станет видимо в DataSpace. */
+    private void awaitDocumentStatus(String documentId, String expected, AuthContext auth) {
+        if (documentId.isEmpty() || expected.isEmpty()) return;
+        for (int attempt = 0; attempt < 20; attempt++) {
+            JsonNode page =
+                    data.query("searchPdsContract", object("offset", 0, "limit", 500), auth)
+                            .path("searchPdsContract");
+            boolean matched =
+                    list(page.path("elems")).stream()
+                            .filter(row -> documentId.equals(text(row, "documentId")))
+                            .anyMatch(row -> expected.equals(PdsContract.normalizeStatus(text(row, "approvalStatus"))));
+            if (matched) return;
+            if (attempt < 19) pause(250);
+        }
+        LogJson.info(
+                "Platform V document status was not updated in time",
+                object("documentId", documentId, "expectedStatus", expected));
+        throw new ApiException(
+                502,
+                "Platform V не обновила статус карточки документа "
+                        + documentId
+                        + " на "
+                        + expected
+                        + " после завершения задачи");
+    }
+
+    private static void pause(long milliseconds) {
+        try {
+            Thread.sleep(milliseconds);
+        } catch (InterruptedException error) {
+            Thread.currentThread().interrupt();
+            throw new ApiException(503, "Ожидание платформы прервано");
+        }
     }
 
     private boolean matchesParameters(JsonNode parameters, JsonNode result, AuthContext auth) {

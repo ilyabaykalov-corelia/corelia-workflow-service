@@ -17,7 +17,7 @@ import tools.jackson.databind.JsonNode;
 
 import java.util.*;
 
-/** Поиск и чтение задач с совместимыми резервными маршрутами BPMU/BPMX. */
+/** Поиск и чтение задач через адаптеры BPMU/BPMX Platform V. */
 @Component
 public class TaskGateway {
     public static final List<String> ACTIVE = List.of("STARTED", "ASSIGNED", "NEW");

@@ -14,7 +14,7 @@ import tools.jackson.databind.JsonNode;
 
 import java.util.*;
 
-/** Нормализует представление исполнителя и названия ролей из разных версий BPMU. */
+/** Нормализует представление исполнителя и названия ролей Platform V. */
 @Component
 public class TaskPresentation {
     private final BpmClient bpm;
@@ -48,7 +48,17 @@ public class TaskPresentation {
     public static String role(JsonNode task) {
         String direct = text(task, "executorRole");
         if (!direct.isEmpty()) return direct;
-        return list(task.path("executorRoles")).stream()
+        String roles = list(task.path("executorRoles")).stream()
+                .map(ru.corelia.support.Json::text)
+                .filter(s -> !s.isEmpty())
+                .findFirst()
+                .orElse("");
+        if (!roles.isEmpty()) return roles;
+        roles = first(task, "role", "group", "candidateGroup");
+        if (!roles.isEmpty()) return roles;
+        JsonNode groups = task.path("candidateGroups");
+        if (groups.isTextual()) return text(groups);
+        return list(groups).stream()
                 .map(ru.corelia.support.Json::text)
                 .filter(s -> !s.isEmpty())
                 .findFirst()
