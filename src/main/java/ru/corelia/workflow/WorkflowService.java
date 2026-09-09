@@ -9,7 +9,6 @@ import ru.corelia.auth.AuthContext;
 import ru.corelia.config.CoreliaConfig;
 import ru.corelia.http.ApiException;
 import ru.corelia.integration.*;
-import ru.corelia.profile.ProductProfile;
 import ru.corelia.support.LogJson;
 
 import tools.jackson.databind.JsonNode;
@@ -24,19 +23,13 @@ public class WorkflowService {
     private final BpmClient bpm;
     private final DataSpaceClient data;
     private final TaskGateway tasks;
-    private final ProductProfile profile;
     private final CoreliaConfig config;
 
     public WorkflowService(
-            BpmClient bpm,
-            DataSpaceClient data,
-            TaskGateway tasks,
-            ProductProfile profile,
-            CoreliaConfig config) {
+            BpmClient bpm, DataSpaceClient data, TaskGateway tasks, CoreliaConfig config) {
         this.bpm = bpm;
         this.data = data;
         this.tasks = tasks;
-        this.profile = profile;
         this.config = config;
     }
 
@@ -49,24 +42,15 @@ public class WorkflowService {
     public JsonNode create(JsonNode body, AuthContext auth) {
         String type = text(body, "typeCode"), id = text(body, "documentId");
         if (id.isEmpty()) throw new ApiException(400, "Не задан идентификатор документа");
-        profile.requireOperation(type, "create");
-        JsonNode definition = profile.type(type),
-                attributes = profile.validateAttributes(type, body.path("attributes")),
-                mapping = definition.path("process");
-        ObjectNode payload = object("tenant", config.tenant(), "appInstanceId", config.appId());
-        attributes
-                .properties()
-                .forEach(
-                        e ->
-                                payload.set(
-                                        profile.variableMapping(
-                                                definition.path("fields").path(e.getKey()),
-                                                e.getKey()),
-                                        e.getValue()));
-        payload.put(text(mapping, "documentIdVariable"), id)
-                .put(text(mapping, "documentTypeVariable"), type)
-                .put(text(mapping, "createdByVariable"), auth.login())
-                .put(text(mapping, "createdAtVariable"), Instant.now().toString());
+        PdsContract.requireType(type);
+        JsonNode attributes = PdsContract.validateAttributes(body.path("attributes"), false);
+        ObjectNode payload = copy(attributes);
+        payload.put("tenant", config.tenant())
+                .put("appInstanceId", config.appId())
+                .put("documentId", id)
+                .put("documentType", type)
+                .put("createdBy", auth.login())
+                .put("createdAt", Instant.now().toString());
         ObjectNode external =
                 object(
                         "documentId",
@@ -77,10 +61,8 @@ public class WorkflowService {
                         config.tenant(),
                         "appInstanceId",
                         config.appId());
-        // Внешние идентификаторы доступны поиску задач; перечень задаётся профилем, а не данными
-        // запроса.
-        for (String field : ProductProfile.strings(definition.path("processExternalFields")))
-            if (attributes.has(field)) external.set(field, attributes.path(field));
+        // Номер договора входит в контракт поиска задач текущего процесса ПДС.
+        external.set("contractNumber", attributes.path("contractNumber"));
         JsonNode result =
                 bpm.process(
                         "/processes/" + encode(processId(type, auth)) + ":start",
@@ -91,32 +73,18 @@ public class WorkflowService {
     }
 
     private String processId(String type, AuthContext auth) {
-        JsonNode mapping = profile.settings("processSettings");
-        String operation = text(mapping, "query"),
-                typeField = text(mapping, "typeField"),
-                enabled = text(mapping, "enabledField"),
-                process = text(mapping, "processField");
-        String query =
-                "query "
-                        + operation
-                        + "($offset: Int, $limit: Int) { "
-                        + operation
-                        + "(offset: $offset, limit: $limit) { elems { id "
-                        + typeField
-                        + " { id name } "
-                        + process
-                        + " "
-                        + enabled
-                        + " } count } }";
         for (int offset = 0; offset < 10000; ) {
             JsonNode page =
-                    data.execute(query, object("offset", offset, "limit", 500), auth)
-                            .path(operation);
+                    data.query(
+                                    "searchDocumentProcessSettings",
+                                    object("offset", offset, "limit", 500),
+                                    auth)
+                            .path("searchDocumentProcessSettings");
             List<JsonNode> rows = list(page.path("elems"));
             for (JsonNode row : rows)
-                if (!row.path(enabled).equals(MAPPER.getNodeFactory().booleanNode(false))
-                        && type.equals(text(row.path(typeField), "id"))) {
-                    String id = text(row, process);
+                if (!row.path("enabled").equals(MAPPER.getNodeFactory().booleanNode(false))
+                        && type.equals(text(row.path("documentType"), "id"))) {
+                    String id = text(row, "processId");
                     if (id.isEmpty())
                         throw new ApiException(
                                 400, "Для вида документа " + type + " не задан процесс создания");
@@ -136,24 +104,23 @@ public class WorkflowService {
     }
 
     private String type(JsonNode task) {
-        return fallback(
-                attribute(task, text(profile.settings("workflow"), "taskDocumentTypeAttribute")),
-                profile.legacyType());
+        String type = fallback(attribute(task, "documentType"), PdsContract.TYPE);
+        PdsContract.requireType(type);
+        return type;
     }
 
     public List<JsonNode> actions(JsonNode task, AuthContext auth) {
         JsonNode detail = tasks.details(task, auth);
         if (!text(detail, "formType").equals("COMPLETIONS")) return List.of();
-        String type = type(task), field = text(profile.type(type).path("status"), "resultField");
+        type(task);
         List<JsonNode> result = new ArrayList<>();
         int index = 0;
         for (JsonNode option : list(detail.path("completions").path("options"))) {
             index++;
             JsonNode parameters = option.path("result");
             if (!parameters.isObject() || parameters.isEmpty()) continue;
-            String status = profile.status(type, text(parameters, field));
-            if (Objects.equals(status, text(profile.type(type).path("status"), "default")))
-                status = null;
+            String status = PdsContract.status(text(parameters, "approvalStatus"));
+            if (Objects.equals(status, PdsContract.INITIAL_STATUS)) status = null;
             String code =
                     status == null
                             ? fallback(text(option, "label"), "completion_" + index)
@@ -165,7 +132,7 @@ public class WorkflowService {
                             "label",
                             fallback(text(option, "label"), code),
                             "tone",
-                            status == null ? "success" : profile.tone(type, status),
+                            status == null ? "success" : PdsContract.tone(status),
                             "result",
                             parameters);
             if (status != null) action.put("status", status);
@@ -202,7 +169,7 @@ public class WorkflowService {
                                                 400, "Действие недоступно для текущей задачи"));
         if (!text(task, "status").equals("STARTED")) start(id, auth);
         ObjectNode completion = copy(selected.path("result"));
-        if (ProductProfile.strings(profile.settings("workflow").path("takeInWorkLabels"))
+        if (List.of("взять в работу", "take_on")
                         .contains(text(selected, "label").toLowerCase(Locale.ROOT))
                 || text(selected, "code").equalsIgnoreCase("take_on"))
             completion.put("assignee", auth.login());
