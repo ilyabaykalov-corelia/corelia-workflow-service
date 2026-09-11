@@ -59,7 +59,7 @@ public class TaskGateway {
                         });
         return unique(
                 responses.stream()
-                        .flatMap(response -> list(response.path("items")).stream())
+                        .flatMap(response -> responseItems(response).stream())
                         .toList());
     }
 
@@ -67,7 +67,7 @@ public class TaskGateway {
         List<JsonNode> responses = parallel.map(SCOPES, scope -> search(filters, scope, auth));
         return unique(
                 responses.stream()
-                        .flatMap(response -> list(response.path("items")).stream())
+                .flatMap(response -> responseItems(response).stream())
                         .toList());
     }
 
@@ -136,5 +136,19 @@ public class TaskGateway {
         Map<String, JsonNode> result = new LinkedHashMap<>();
         tasks.forEach(task -> result.putIfAbsent(text(task, "id"), task));
         return new ArrayList<>(result.values());
+    }
+
+    private static List<JsonNode> responseItems(JsonNode response) {
+        if (response == null || response.isNull()) return List.of();
+        if (response.isArray()) return list(response);
+        for (String key : List.of("items", "content", "data", "tasks", "result")) {
+            JsonNode value = response.path(key);
+            if (value.isArray()) return list(value);
+            if (value.isObject()) {
+                List<JsonNode> nested = responseItems(value);
+                if (!nested.isEmpty()) return nested;
+            }
+        }
+        return List.of();
     }
 }
