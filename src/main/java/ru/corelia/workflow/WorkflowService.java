@@ -50,11 +50,9 @@ public class WorkflowService {
             List<String> selected =
                     statuses.contains(requestedStatus)
                             ? List.of(requestedStatus)
-                            : queue.equals("AVAILABLE")
-                                    ? List.of("NEW", "ASSIGNED")
-                                    : List.of("ASSIGNED", "STARTED");
+                            : List.of("NEW", "ASSIGNED", "STARTED");
             found =
-                    tasks.searchStatuses(selected, List.of("EXECUTOR"), object(), auth).stream()
+                    tasks.searchStatuses(selected, TaskGateway.SCOPES, object(), auth).stream()
                             .filter(
                                     task ->
                                             queue.equals("MY")
@@ -84,11 +82,11 @@ public class WorkflowService {
 
     private static boolean assigned(JsonNode task) {
         for (String field : List.of("assignee", "assigneeLogin", "executorLogin", "performerLogin"))
-            if (!text(task, field).isEmpty()) return true;
+            if (!comparable(task.path(field)).isEmpty()) return true;
         for (String field : List.of("executor", "performer")) {
             JsonNode actor = task.path(field);
             if (actor.isObject()
-                    && !first(actor, "login", "username", "userName").isEmpty()) return true;
+                    && !comparable(actor.path("login")).isEmpty()) return true;
         }
         return !attribute(task, "assignee").isEmpty();
     }

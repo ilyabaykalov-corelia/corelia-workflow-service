@@ -33,8 +33,16 @@ public class TaskPresentation {
 
     public static String login(JsonNode task) {
         return fallback(
-                first(task, "assignee", "assigneeLogin", "executorLogin", "performerLogin"),
+                firstComparable(task, "assignee", "assigneeLogin", "executorLogin", "performerLogin"),
                 fallback(actorLogin(task.path("executor")), actorLogin(task.path("performer"))));
+    }
+
+    private static String firstComparable(JsonNode node, String... fields) {
+        for (String field : fields) {
+            String value = comparable(node.path(field));
+            if (!value.isEmpty()) return value;
+        }
+        return "";
     }
 
     public static String name(JsonNode task) {
@@ -68,7 +76,7 @@ public class TaskPresentation {
     private static String actorLogin(JsonNode actor) {
         return actor.isTextual()
                 ? text(actor)
-                : first(actor, "login", "username", "userName");
+                : firstComparable(actor, "login", "username", "userName");
     }
 
     private static String actorName(JsonNode actor) {
