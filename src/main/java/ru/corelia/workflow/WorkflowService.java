@@ -47,17 +47,19 @@ public class WorkflowService {
         Set<String> statuses = Set.of("NEW", "ASSIGNED", "STARTED", "COMPLETED", "ABORTED");
         List<JsonNode> found;
         if (queue.equals("MY") || queue.equals("AVAILABLE")) {
+            Set<String> existingDocuments = existingDocumentIds(auth);
             List<String> selected =
                     statuses.contains(requestedStatus)
                             ? List.of(requestedStatus)
                             : List.of("NEW", "ASSIGNED", "STARTED");
             found =
-                    tasks.searchStatuses(selected, TaskGateway.SCOPES, object(), auth).stream()
+                    tasks.searchStatuses(selected, queue.equals("MY") ? List.of("EXECUTOR") : TaskGateway.SCOPES, object(), auth).stream()
                             .filter(
                                     task ->
                                             queue.equals("MY")
-                                                    ? auth.login().equalsIgnoreCase(assignedLogin(task))
-                                                    : !assigned(task))
+                                                    ? auth.login().equalsIgnoreCase(assignee(task))
+                                                    : assignee(task).isEmpty())
+                            .filter(task -> existingDocuments.contains(attribute(task, "documentId")))
                             .toList();
         } else {
             ObjectNode filters = object();
@@ -89,6 +91,21 @@ public class WorkflowService {
                     && !comparable(actor.path("login")).isEmpty()) return true;
         }
         return !attribute(task, "assignee").isEmpty();
+    }
+
+    private static String assignee(JsonNode task) {
+        return comparable(task.path("assignee"));
+    }
+
+    private Set<String> existingDocumentIds(AuthContext auth) {
+        JsonNode page = data.query("searchPdsContract", object("offset", 0, "limit", 500), auth)
+                .path("searchPdsContract");
+        Set<String> ids = new HashSet<>();
+        list(page.path("elems")).forEach(row -> {
+            String id = text(row, "documentId");
+            if (!id.isEmpty()) ids.add(id);
+        });
+        return ids;
     }
 
     private static String assignedLogin(JsonNode task) {
