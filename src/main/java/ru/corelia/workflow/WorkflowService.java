@@ -84,19 +84,21 @@ public class WorkflowService {
     /** Контекст процесса для карточки: активная задача, действия и исполнитель. */
     public JsonNode documentWorkflow(String type, String documentId, AuthContext auth) {
         PdsContract.requireType(type);
-        JsonNode task =
-                tasks.byDocument(documentId, auth).stream()
-                        .min(
-                                Comparator.comparingInt(
-                                        value -> {
-                                            return switch (text(value, "status")) {
-                                                case "STARTED" -> 0;
-                                                case "ASSIGNED" -> 1;
-                                                case "NEW" -> 2;
-                                                default -> 3;
-                                            };
-                                        }))
-                        .orElse(null);
+        JsonNode task = null;
+        // После завершения задачи BPMU некоторое время может отдавать старое
+        // состояние. Повторяем чтение, чтобы карточка сразу показывала новый
+        // исполнитель и доступные действия.
+        for (int attempt = 0; attempt < 3 && task == null; attempt++) {
+            task = tasks.byDocument(documentId, auth).stream()
+                    .min(Comparator.comparingInt(value -> switch (text(value, "status")) {
+                        case "STARTED" -> 0;
+                        case "ASSIGNED" -> 1;
+                        case "NEW" -> 2;
+                        default -> 3;
+                    }))
+                    .orElse(null);
+            if (task == null && attempt < 2) pause(350);
+        }
         if (task == null) return object("task", null, "availableActions", List.of(), "executor", null);
         return object(
                 "task", task,
