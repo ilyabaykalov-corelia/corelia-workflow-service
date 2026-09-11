@@ -58,7 +58,7 @@ public class WorkflowService {
                             .filter(
                                     task ->
                                             queue.equals("MY")
-                                                    ? auth.login().equals(login(task))
+                                                    ? auth.login().equalsIgnoreCase(assignedLogin(task))
                                                     : !assigned(task))
                             .toList();
         } else {
@@ -72,6 +72,13 @@ public class WorkflowService {
                         .filter(task -> query.isEmpty() || searchText(task).contains(query))
                         .map(task -> decorateTask(task, auth))
                         .toList();
+        LogJson.info(
+                "Список задач сформирован",
+                object(
+                        "queue", queue.isEmpty() ? "ALL" : queue,
+                        "requestedStatus", requestedStatus,
+                        "found", found.size(),
+                        "visible", visible.size()));
         return object("items", visible, "total", visible.size());
     }
 
@@ -83,7 +90,13 @@ public class WorkflowService {
             if (actor.isObject()
                     && !first(actor, "login", "username", "userName").isEmpty()) return true;
         }
-        return false;
+        return !attribute(task, "assignee").isEmpty();
+    }
+
+    private static String assignedLogin(JsonNode task) {
+        String login = login(task);
+        if (!login.isEmpty()) return login;
+        return attribute(task, "assignee");
     }
 
     public JsonNode summary(AuthContext auth) {
