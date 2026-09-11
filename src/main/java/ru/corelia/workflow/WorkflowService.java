@@ -53,7 +53,7 @@ public class WorkflowService {
                             ? List.of(requestedStatus)
                             : List.of("NEW", "ASSIGNED", "STARTED");
             found =
-                    tasks.searchStatuses(selected, queue.equals("MY") ? List.of("EXECUTOR") : TaskGateway.SCOPES, object(), auth).stream()
+                    tasks.searchStatuses(selected, TaskGateway.SCOPES, object(), auth).stream()
                             .filter(
                                     task ->
                                             queue.equals("MY")
