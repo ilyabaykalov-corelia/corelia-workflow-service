@@ -68,7 +68,7 @@ public class TaskPresentation {
     private static String actorLogin(JsonNode actor) {
         return actor.isTextual()
                 ? text(actor)
-                : first(actor, "login", "username", "userName", "name", "id");
+                : first(actor, "login", "username", "userName");
     }
 
     private static String actorName(JsonNode actor) {

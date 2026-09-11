@@ -59,7 +59,7 @@ public class WorkflowService {
                                     task ->
                                             queue.equals("MY")
                                                     ? auth.login().equals(login(task))
-                                                    : login(task).isEmpty())
+                                                    : !assigned(task))
                             .toList();
         } else {
             ObjectNode filters = object();
@@ -73,6 +73,17 @@ public class WorkflowService {
                         .map(task -> decorateTask(task, auth))
                         .toList();
         return object("items", visible, "total", visible.size());
+    }
+
+    private static boolean assigned(JsonNode task) {
+        for (String field : List.of("assignee", "assigneeLogin", "executorLogin", "performerLogin"))
+            if (!text(task, field).isEmpty()) return true;
+        for (String field : List.of("executor", "performer")) {
+            JsonNode actor = task.path(field);
+            if (actor.isObject()
+                    && !first(actor, "login", "username", "userName").isEmpty()) return true;
+        }
+        return false;
     }
 
     public JsonNode summary(AuthContext auth) {
