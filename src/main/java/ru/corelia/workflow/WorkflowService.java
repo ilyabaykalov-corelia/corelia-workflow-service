@@ -98,8 +98,8 @@ public class WorkflowService {
     }
 
     private Set<String> existingDocumentIds(AuthContext auth) {
-        JsonNode page = data.query("searchPdsContract", object("offset", 0, "limit", 500), auth)
-                .path("searchPdsContract");
+        JsonNode page = data.query("searchDocument", object("offset", 0, "limit", 500), auth)
+                .path("searchDocument");
         Set<String> ids = new HashSet<>();
         list(page.path("elems")).forEach(row -> {
             String id = text(row, "documentId");
@@ -328,12 +328,12 @@ public class WorkflowService {
         if (documentId.isEmpty() || expected.isEmpty()) return;
         for (int attempt = 0; attempt < 20; attempt++) {
             JsonNode page =
-                    data.query("searchPdsContract", object("offset", 0, "limit", 500), auth)
-                            .path("searchPdsContract");
+                    data.query("searchDocument", object("offset", 0, "limit", 500), auth)
+                            .path("searchDocument");
             boolean matched =
                     list(page.path("elems")).stream()
                             .filter(row -> documentId.equals(text(row, "documentId")))
-                            .anyMatch(row -> expected.equals(PdsContract.normalizeStatus(text(row, "approvalStatus"))));
+                            .anyMatch(row -> expected.equals(PdsContract.normalizeStatus(text(row.path("pdsContract"), "status"))));
             if (matched) return;
             if (attempt < 19) pause(250);
         }
