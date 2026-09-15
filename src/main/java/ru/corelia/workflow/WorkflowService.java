@@ -122,7 +122,7 @@ public class WorkflowService {
 
     /** Контекст процесса для карточки: активная задача, действия и исполнитель. */
     public JsonNode documentWorkflow(String type, String documentId, AuthContext auth) {
-        PdsContract.requireType(type);
+        DocumentTypes.requireType(type);
         JsonNode task = null;
         // После завершения задачи BPMU некоторое время может отдавать старое
         // состояние. Повторяем чтение, чтобы карточка сразу показывала новый
@@ -160,8 +160,8 @@ public class WorkflowService {
     public JsonNode create(JsonNode body, AuthContext auth) {
         String type = text(body, "typeCode"), id = text(body, "documentId");
         if (id.isEmpty()) throw new ApiException(400, "Не задан идентификатор документа");
-        PdsContract.requireType(type);
-        JsonNode attributes = PdsContract.validateAttributes(body.path("attributes"), false);
+        DocumentTypes.requireType(type);
+        JsonNode attributes = DocumentTypes.validate(type, body.path("attributes"), false);
         ObjectNode payload = copy(attributes);
         payload.put("tenant", config.tenant())
                 .put("appInstanceId", config.appId())
@@ -169,6 +169,15 @@ public class WorkflowService {
                 .put("documentType", type)
                 .put("createdBy", auth.login())
                 .put("createdAt", Instant.now().toString());
+        if (type.equals("KID_OPS")) {
+            JsonNode file = body.path("initialAttachment");
+            if (text(file, "attachmentId").isEmpty() || !text(file, "documentId").equals(id)
+                    || !text(file, "storageReference").startsWith("platform-v-dam:documents/" + id + "/"))
+                throw new ApiException(400, "Отсутствует подготовленное обязательное вложение");
+            for (String field : List.of("attachmentId", "fileName", "contentType", "size", "storageReference", "uploadedAt"))
+                payload.set("initial_" + field, file.path(field));
+            payload.put("creationKey", text(body, "creationKey")); payload.put("creationHash", text(body, "creationHash"));
+        }
         ObjectNode external =
                 object(
                         "documentId",
@@ -223,7 +232,7 @@ public class WorkflowService {
 
     private String type(JsonNode task) {
         String type = fallback(attribute(task, "documentType"), PdsContract.TYPE);
-        PdsContract.requireType(type);
+        DocumentTypes.requireType(type);
         return type;
     }
 
@@ -237,7 +246,7 @@ public class WorkflowService {
             index++;
             JsonNode parameters = option.path("result");
             if (!parameters.isObject() || parameters.isEmpty()) continue;
-            String status = PdsContract.status(text(parameters, "approvalStatus"));
+            String status = DocumentTypes.status(type(task), text(parameters, "approvalStatus"));
             if (Objects.equals(status, PdsContract.INITIAL_STATUS)) status = null;
             String code =
                     status == null
@@ -333,7 +342,7 @@ public class WorkflowService {
             boolean matched =
                     list(page.path("elems")).stream()
                             .filter(row -> documentId.equals(text(row, "documentId")))
-                            .anyMatch(row -> expected.equals(PdsContract.normalizeStatus(text(row.path("pdsContract"), "status"))));
+                            .anyMatch(row -> expected.equals(text(row.path(DocumentTypes.details(text(row.path("documentType"), "id"))), "status")));
             if (matched) return;
             if (attempt < 19) pause(250);
         }
