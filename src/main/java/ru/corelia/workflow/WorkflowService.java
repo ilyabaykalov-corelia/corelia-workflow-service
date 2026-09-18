@@ -100,14 +100,18 @@ public class WorkflowService {
     }
 
     private Set<String> existingDocumentIds(AuthContext auth) {
-        JsonNode page = data.query("searchDocument", object("offset", 0, "limit", 500), auth)
-                .path("searchDocument");
         Set<String> ids = new HashSet<>();
-        list(page.path("elems")).forEach(row -> {
-            String id = text(row, "documentId");
-            if (!id.isEmpty()) ids.add(id);
-        });
-        return ids;
+        for (int offset = 0; ; ) {
+            JsonNode page = data.query("searchDocument", object("offset", offset, "limit", 500), auth)
+                    .path("searchDocument");
+            List<JsonNode> rows = list(page.path("elems"));
+            rows.forEach(row -> {
+                String id = text(row, "documentId");
+                if (!id.isEmpty()) ids.add(id);
+            });
+            offset += rows.size();
+            if (rows.isEmpty() || offset >= number(page, "count", offset)) return ids;
+        }
     }
 
     private static String assignedLogin(JsonNode task) {
@@ -354,7 +358,16 @@ public class WorkflowService {
         if (documentId.isEmpty() || expected.isEmpty()) return;
         for (int attempt = 0; attempt < 20; attempt++) {
             JsonNode page =
-                    data.query("searchDocument", object("offset", 0, "limit", 500), auth)
+                    data.query(
+                                    "searchDocument",
+                                    object(
+                                            "cond",
+                                            "it.documentId == '" + documentId.replace("'", "''") + "'",
+                                            "offset",
+                                            0,
+                                            "limit",
+                                            2),
+                                    auth)
                             .path("searchDocument");
             boolean matched =
                     list(page.path("elems")).stream()
