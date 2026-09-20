@@ -7,6 +7,7 @@ import jakarta.servlet.http.HttpServletRequest;
 import org.springframework.web.bind.annotation.*;
 
 import ru.corelia.http.ApiRequest;
+import ru.corelia.observability.CoreliaObservability;
 
 import tools.jackson.databind.JsonNode;
 
@@ -18,21 +19,32 @@ public class WorkflowController {
     private final TaskGateway tasks;
     private final TaskPresentation presentation;
     private final ApiRequest requests;
+    private final CoreliaObservability observability;
 
     public WorkflowController(
             WorkflowService workflow,
             TaskGateway tasks,
             TaskPresentation presentation,
-            ApiRequest requests) {
+            ApiRequest requests,
+            CoreliaObservability observability) {
         this.workflow = workflow;
         this.tasks = tasks;
         this.presentation = presentation;
         this.requests = requests;
+        this.observability = observability;
     }
 
     @PostMapping("/processes/start")
     public JsonNode create(HttpServletRequest r) {
-        return workflow.create(requests.body(r), requests.auth(r));
+        try {
+            JsonNode result = observability.observe(
+                    "workflow.start", () -> workflow.create(requests.body(r), requests.auth(r)));
+            observability.workflowStarted();
+            return result;
+        } catch (RuntimeException error) {
+            observability.workflowStartFailed();
+            throw error;
+        }
     }
 
     @GetMapping("/processes/{id}")
