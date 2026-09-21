@@ -7,6 +7,7 @@ import org.springframework.stereotype.Service;
 
 import ru.corelia.auth.AuthContext;
 import ru.corelia.config.CoreliaConfig;
+import ru.corelia.configuration.DocumentTypeCatalog;
 import ru.corelia.http.ApiException;
 import ru.corelia.integration.*;
 import ru.corelia.support.LogJson;
@@ -20,14 +21,14 @@ import java.util.*;
 /** Сценарии процессов и задач. Источник связи процесса с видом документа определяется конфигурацией. */
 @Service
 public class WorkflowService {
-    private final DocumentTypes types;
+    private final DocumentTypeCatalog types;
     private final BpmClient bpm;
     private final DataSpaceClient data;
     private final TaskGateway tasks;
     private final TaskPresentation presentation;
     private final CoreliaConfig config;
 
-    public WorkflowService(DocumentTypes types,
+    public WorkflowService(DocumentTypeCatalog types,
             BpmClient bpm,
             DataSpaceClient data,
             TaskGateway tasks,
@@ -372,7 +373,7 @@ public class WorkflowService {
             boolean matched =
                     list(page.path("elems")).stream()
                             .filter(row -> documentId.equals(text(row, "documentId")))
-                            .anyMatch(row -> expected.equals(text(row.path(types.details(text(row.path("documentType"), "id"))), "status")));
+                            .anyMatch(row -> expected.equals(text(row.path(text(types.definition(text(row.path("documentType"), "id")).storage(), "details")), "status")));
             if (matched) return;
             if (attempt < 19) pause(250);
         }
