@@ -16,20 +16,14 @@ import tools.jackson.databind.JsonNode;
 @RequestMapping("/internal/v1")
 public class WorkflowController {
     private final WorkflowService workflow;
-    private final TaskGateway tasks;
-    private final TaskPresentation presentation;
     private final ApiRequest requests;
     private final CoreliaObservability observability;
 
     public WorkflowController(
             WorkflowService workflow,
-            TaskGateway tasks,
-            TaskPresentation presentation,
             ApiRequest requests,
             CoreliaObservability observability) {
         this.workflow = workflow;
-        this.tasks = tasks;
-        this.presentation = presentation;
         this.requests = requests;
         this.observability = observability;
     }
@@ -76,13 +70,13 @@ public class WorkflowController {
     @GetMapping("/tasks/{id}/details")
     public JsonNode details(@PathVariable String id, HttpServletRequest r) {
         var auth = requests.auth(r);
-        return tasks.details(workflow.requireTask(id, auth), auth);
+        return workflow.requireTask(id, auth);
     }
 
     @GetMapping("/tasks/{id}/actions")
     public JsonNode actions(@PathVariable String id, HttpServletRequest r) {
         var auth = requests.auth(r);
-        return array(workflow.actions(workflow.requireTask(id, auth), auth));
+        return workflow.actions(workflow.taskModel(id, auth));
     }
 
     @PostMapping("/tasks/{id}/start")
@@ -97,6 +91,6 @@ public class WorkflowController {
 
     @GetMapping("/roles/{role}")
     public JsonNode role(@PathVariable String role, HttpServletRequest r) {
-        return object("label", presentation.roleLabel(role, requests.auth(r)));
+        return object("label", workflow.roleLabel(role, requests.auth(r)));
     }
 }
