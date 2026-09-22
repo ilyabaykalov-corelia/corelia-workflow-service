@@ -31,15 +31,15 @@ public class WorkflowService {
         types.requireType(type); WorkflowTask task = tasks.findByDocument(documentId, auth).stream().min(Comparator.comparingInt(value -> priority(value.status()))).orElse(null);
         return task == null ? object("task", null, "availableActions", List.of(), "executor", null) : object("task", task(task, auth), "availableActions", actions(task), "executor", executor(task, auth));
     }
-    public JsonNode process(String id, AuthContext auth) { return process(workflows.get(id, auth)); }
+    public JsonNode process(String id, AuthContext auth) { return process(workflows.process(id, auth)); }
     public JsonNode create(JsonNode body, AuthContext auth) {
         String type = text(body, "typeCode"), id = text(body, "documentId"); if (id.isEmpty()) throw new ApiException(400, "Не задан идентификатор документа"); types.requireType(type);
         JsonNode attrs = types.validate(type, body.path("attributes"), false); AttachmentMetadata file = body.path("initialAttachment").isObject() ? attachment(body.path("initialAttachment"), id) : null;
         if (types.initialAttachmentRequired(type) && file == null) throw new ApiException(400, "Отсутствует подготовленное обязательное вложение");
         return process(workflows.start(new WorkflowContext(id, type, map(attrs), auth.login(), id, file, text(body, "creationKey"), text(body, "creationHash")), auth));
     }
-    public JsonNode requireTask(String id, AuthContext auth) { WorkflowTask task = tasks.get(id, auth); if (task == null) throw new ApiException(404, "Активная задача не найдена"); return task(task, auth); }
-    WorkflowTask taskModel(String id, AuthContext auth) { WorkflowTask task = tasks.get(id, auth); if (task == null) throw new ApiException(404, "Активная задача не найдена"); return task; }
+    public JsonNode requireTask(String id, AuthContext auth) { WorkflowTask task = tasks.task(id, auth); if (task == null) throw new ApiException(404, "Активная задача не найдена"); return task(task, auth); }
+    WorkflowTask taskModel(String id, AuthContext auth) { WorkflowTask task = tasks.task(id, auth); if (task == null) throw new ApiException(404, "Активная задача не найдена"); return task; }
     public JsonNode actions(WorkflowTask task) { return array(task.actions().stream().map(this::action).toList()); }
     public JsonNode start(String id, AuthContext auth) { tasks.start(id, auth); return object("operationResults", List.of(object("userTaskId", id, "responseType", "SUCCESS"))); }
     public JsonNode complete(String id, JsonNode payload, AuthContext auth) {
