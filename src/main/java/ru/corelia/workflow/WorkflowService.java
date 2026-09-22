@@ -9,6 +9,7 @@ import ru.corelia.auth.AuthContext;
 import ru.corelia.configuration.DocumentTypeCatalog;
 import ru.corelia.http.ApiException;
 import ru.corelia.provider.DocumentStore;
+import ru.corelia.provider.DocumentVersionStore;
 import ru.corelia.provider.TaskProvider;
 import ru.corelia.provider.WorkflowProvider;
 import ru.corelia.provider.model.*;
@@ -18,8 +19,8 @@ import tools.jackson.databind.node.ObjectNode;
 /** Сценарии Corelia для процессов и задач без знания provider transport. */
 @Service
 public class WorkflowService {
-    private final DocumentTypeCatalog types; private final DocumentStore documents; private final WorkflowProvider workflows; private final TaskProvider tasks;
-    public WorkflowService(DocumentTypeCatalog types, DocumentStore documents, WorkflowProvider workflows, TaskProvider tasks) { this.types = types; this.documents = documents; this.workflows = workflows; this.tasks = tasks; }
+    private final DocumentTypeCatalog types; private final DocumentStore documents; private final DocumentVersionStore versions; private final WorkflowProvider workflows; private final TaskProvider tasks;
+    public WorkflowService(DocumentTypeCatalog types, DocumentStore documents, DocumentVersionStore versions, WorkflowProvider workflows, TaskProvider tasks) { this.types = types; this.documents = documents; this.versions = versions; this.workflows = workflows; this.tasks = tasks; }
     public JsonNode search(JsonNode body, AuthContext auth) {
         String queue = text(body, "queue").toUpperCase(Locale.ROOT), requested = text(body, "status").toUpperCase(Locale.ROOT), query = text(body, "query").toLowerCase(Locale.ROOT);
         Set<String> allowed = Set.of("NEW", "ASSIGNED", "STARTED", "COMPLETED", "ABORTED"); Set<String> statuses = allowed.contains(requested) ? Set.of(requested) : Set.of("NEW", "ASSIGNED", "STARTED");
@@ -34,9 +35,13 @@ public class WorkflowService {
     public JsonNode process(String id, AuthContext auth) { return process(workflows.process(id, auth)); }
     public JsonNode create(JsonNode body, AuthContext auth) {
         String type = text(body, "typeCode"), id = text(body, "documentId"); if (id.isEmpty()) throw new ApiException(400, "Не задан идентификатор документа"); types.requireType(type);
-        JsonNode attrs = types.validate(type, body.path("attributes"), false); AttachmentMetadata file = body.path("initialAttachment").isObject() ? attachment(body.path("initialAttachment"), id) : null;
-        if (types.initialAttachmentRequired(type) && file == null) throw new ApiException(400, "Отсутствует подготовленное обязательное вложение");
-        return process(workflows.start(new WorkflowContext(id, type, map(attrs), auth.login(), id, file, text(body, "creationKey"), text(body, "creationHash")), auth));
+        JsonNode attrs = types.validate(type, body.path("attributes"), false);
+        documents.get(type, id, auth);
+        if (types.initialAttachmentRequired(type) && versions.attachments(id, auth).stream().noneMatch(AttachmentMetadata::current))
+            throw new ApiException(409, "Обязательное вложение ещё не зафиксировано");
+        WorkflowTask existing = tasks.findByDocument(id, auth).stream().findFirst().orElse(null);
+        if (existing != null) return object("id", "", "documentId", id, "state", "ACTIVE");
+        return process(workflows.start(new WorkflowContext(id, type, map(attrs), auth.login(), id, null, text(body, "creationKey"), text(body, "creationHash")), auth));
     }
     public JsonNode requireTask(String id, AuthContext auth) { WorkflowTask task = tasks.task(id, auth); if (task == null) throw new ApiException(404, "Активная задача не найдена"); return task(task, auth); }
     WorkflowTask taskModel(String id, AuthContext auth) { WorkflowTask task = tasks.task(id, auth); if (task == null) throw new ApiException(404, "Активная задача не найдена"); return task; }
