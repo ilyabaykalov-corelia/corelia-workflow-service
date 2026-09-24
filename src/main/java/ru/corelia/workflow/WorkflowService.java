@@ -1,454 +1,67 @@
 package ru.corelia.workflow;
 
 import static ru.corelia.support.Json.*;
-import static ru.corelia.workflow.TaskPresentation.*;
-
-import org.springframework.stereotype.Service;
-
-import ru.corelia.auth.AuthContext;
-import ru.corelia.config.CoreliaConfig;
-import ru.corelia.http.ApiException;
-import ru.corelia.integration.*;
-import ru.corelia.support.LogJson;
-
-import tools.jackson.databind.JsonNode;
-import tools.jackson.databind.node.ObjectNode;
 
 import java.time.Instant;
 import java.util.*;
+import org.springframework.stereotype.Service;
+import ru.corelia.auth.AuthContext;
+import ru.corelia.configuration.DocumentTypeCatalog;
+import ru.corelia.http.ApiException;
+import ru.corelia.provider.DocumentStore;
+import ru.corelia.provider.DocumentVersionStore;
+import ru.corelia.provider.TaskProvider;
+import ru.corelia.provider.WorkflowProvider;
+import ru.corelia.provider.model.*;
+import tools.jackson.databind.JsonNode;
+import tools.jackson.databind.node.ObjectNode;
 
-/** Сценарии процессов и задач. Источник связи процесса с видом документа определяется конфигурацией. */
+/** Сценарии Corelia для процессов и задач без знания provider transport. */
 @Service
 public class WorkflowService {
-    private final DocumentTypes types;
-    private final BpmClient bpm;
-    private final DataSpaceClient data;
-    private final TaskGateway tasks;
-    private final TaskPresentation presentation;
-    private final CoreliaConfig config;
-
-    public WorkflowService(DocumentTypes types,
-            BpmClient bpm,
-            DataSpaceClient data,
-            TaskGateway tasks,
-            TaskPresentation presentation,
-            CoreliaConfig config) {
-        this.types = types;
-        this.bpm = bpm;
-        this.data = data;
-        this.tasks = tasks;
-        this.presentation = presentation;
-        this.config = config;
-    }
-
-    /** Возвращает современный контракт очереди задач Corelia. */
+    private final DocumentTypeCatalog types; private final DocumentStore documents; private final DocumentVersionStore versions; private final WorkflowProvider workflows; private final TaskProvider tasks;
+    public WorkflowService(DocumentTypeCatalog types, DocumentStore documents, DocumentVersionStore versions, WorkflowProvider workflows, TaskProvider tasks) { this.types = types; this.documents = documents; this.versions = versions; this.workflows = workflows; this.tasks = tasks; }
     public JsonNode search(JsonNode body, AuthContext auth) {
-        String queue = text(body, "queue").toUpperCase(Locale.ROOT);
-        String requestedStatus = text(body, "status").toUpperCase(Locale.ROOT);
-        String query = text(body, "query").toLowerCase(Locale.ROOT);
-        Set<String> statuses = Set.of("NEW", "ASSIGNED", "STARTED", "COMPLETED", "ABORTED");
-        List<JsonNode> found;
-        if (queue.equals("MY") || queue.equals("AVAILABLE")) {
-            Set<String> existingDocuments = existingDocumentIds(auth);
-            List<String> selected =
-                    statuses.contains(requestedStatus)
-                            ? List.of(requestedStatus)
-                            : List.of("NEW", "ASSIGNED", "STARTED");
-            found =
-                    tasks.searchStatuses(selected, TaskGateway.SCOPES, object(), auth).stream()
-                            .filter(
-                                    task ->
-                                            queue.equals("MY")
-                                                    ? auth.login().equalsIgnoreCase(assignee(task))
-                                                    : assignee(task).isEmpty())
-                            .filter(task -> existingDocuments.contains(attribute(task, "documentId")))
-                            .toList();
-        } else {
-            ObjectNode filters = object();
-            if (statuses.contains(requestedStatus))
-                filters.set("status", object("value", requestedStatus));
-            found = tasks.broad(filters, auth);
-        }
-        List<JsonNode> visible =
-                found.stream()
-                        .filter(task -> query.isEmpty() || searchText(task).contains(query))
-                        .map(task -> decorateTask(task, auth))
-                        .toList();
-        LogJson.info(
-                "Список задач сформирован",
-                object(
-                        "queue", queue.isEmpty() ? "ALL" : queue,
-                        "requestedStatus", requestedStatus,
-                        "found", found.size(),
-                        "visible", visible.size()));
-        return object("items", visible, "total", visible.size());
+        String queue = text(body, "queue").toUpperCase(Locale.ROOT), requested = text(body, "status").toUpperCase(Locale.ROOT), query = text(body, "query").toLowerCase(Locale.ROOT);
+        Set<String> allowed = Set.of("NEW", "ASSIGNED", "STARTED", "COMPLETED", "ABORTED"); Set<String> statuses = allowed.contains(requested) ? Set.of(requested) : Set.of("NEW", "ASSIGNED", "STARTED");
+        List<WorkflowTask> found = tasks.search(new TaskSearchRequest(statuses), auth).stream().filter(task -> queue.equals("MY") ? auth.login().equalsIgnoreCase(task.assignee()) : !queue.equals("AVAILABLE") || task.assignee().isEmpty()).filter(task -> query.isEmpty() || taskText(task).contains(query)).toList();
+        return object("items", found.stream().map(task -> task(task, auth)).toList(), "total", found.size());
     }
-
-    private static boolean assigned(JsonNode task) {
-        for (String field : List.of("assignee", "assigneeLogin", "executorLogin", "performerLogin"))
-            if (!comparable(task.path(field)).isEmpty()) return true;
-        for (String field : List.of("executor", "performer")) {
-            JsonNode actor = task.path(field);
-            if (actor.isObject()
-                    && !comparable(actor.path("login")).isEmpty()) return true;
-        }
-        return !attribute(task, "assignee").isEmpty();
-    }
-
-    private static String assignee(JsonNode task) {
-        return comparable(task.path("assignee"));
-    }
-
-    private Set<String> existingDocumentIds(AuthContext auth) {
-        Set<String> ids = new HashSet<>();
-        for (int offset = 0; ; ) {
-            JsonNode page = data.query("searchDocument", object("offset", offset, "limit", 500), auth)
-                    .path("searchDocument");
-            List<JsonNode> rows = list(page.path("elems"));
-            rows.forEach(row -> {
-                String id = text(row, "documentId");
-                if (!id.isEmpty()) ids.add(id);
-            });
-            offset += rows.size();
-            if (rows.isEmpty() || offset >= number(page, "count", offset)) return ids;
-        }
-    }
-
-    private static String assignedLogin(JsonNode task) {
-        String login = login(task);
-        if (!login.isEmpty()) return login;
-        return attribute(task, "assignee");
-    }
-
-    public JsonNode summary(AuthContext auth) {
-        return object(
-                "my", number(search(object("queue", "MY"), auth), "total", 0),
-                "available", number(search(object("queue", "AVAILABLE"), auth), "total", 0));
-    }
-
-    /** Контекст процесса для карточки: активная задача, действия и исполнитель. */
+    public JsonNode summary(AuthContext auth) { return object("my", number(search(object("queue", "MY"), auth), "total", 0), "available", number(search(object("queue", "AVAILABLE"), auth), "total", 0)); }
     public JsonNode documentWorkflow(String type, String documentId, AuthContext auth) {
-        types.requireType(type);
-        JsonNode task = null;
-        // После завершения задачи BPMU некоторое время может отдавать старое
-        // состояние. Повторяем чтение, чтобы карточка сразу показывала новый
-        // исполнитель и доступные действия.
-        for (int attempt = 0; attempt < 3 && task == null; attempt++) {
-            task = tasks.byDocument(documentId, auth).stream()
-                    .min(Comparator.comparingInt(value -> switch (text(value, "status")) {
-                        case "STARTED" -> 0;
-                        case "ASSIGNED" -> 1;
-                        case "NEW" -> 2;
-                        default -> 3;
-                    }))
-                    .orElse(null);
-            if (task == null && attempt < 2) pause(350);
-        }
-        if (task == null) return object("task", null, "availableActions", List.of(), "executor", null);
-        return object(
-                "task", task,
-                "availableActions", actions(task, auth),
-                "executor", presentation.executor(task, auth));
+        types.requireType(type); WorkflowTask task = tasks.findByDocument(documentId, auth).stream().min(Comparator.comparingInt(value -> priority(value.status()))).orElse(null);
+        return task == null ? object("task", null, "availableActions", List.of(), "executor", null) : object("task", task(task, auth), "availableActions", actions(task), "executor", executor(task, auth));
     }
-
-    private JsonNode decorateTask(JsonNode task, AuthContext auth) {
-        ObjectNode result = copy(task);
-        result.set("availableActions", array(actions(task, auth)));
-        return result;
-    }
-
-    public JsonNode process(String id, AuthContext auth) {
-        JsonNode result = bpm.process("/instances/" + encode(id), null, auth);
-        assertNoIncident(result);
-        return result;
-    }
-
+    public JsonNode process(String id, AuthContext auth) { return process(workflows.process(id, auth)); }
     public JsonNode create(JsonNode body, AuthContext auth) {
-        String type = text(body, "typeCode"), id = text(body, "documentId");
-        if (id.isEmpty()) throw new ApiException(400, "Не задан идентификатор документа");
-        types.requireType(type);
-        JsonNode attributes = types.validate(type, body.path("attributes"), false);
-        ObjectNode payload = copy(attributes);
-        payload.put("tenant", config.tenant())
-                .put("appInstanceId", config.appId())
-                .put("documentId", id)
-                .put("documentType", type)
-                .put("createdBy", auth.login())
-                .put("createdAt", Instant.now().toString());
-        if (types.initialAttachmentRequired(type)) {
-            JsonNode file = body.path("initialAttachment");
-            if (text(file, "attachmentId").isEmpty() || !text(file, "documentId").equals(id)
-                    || !text(file, "storageReference").startsWith("platform-v-dam:documents/" + id + "/"))
-                throw new ApiException(400, "Отсутствует подготовленное обязательное вложение");
-            for (String field : List.of("attachmentId", "fileName", "contentType", "size", "storageReference", "uploadedAt"))
-                payload.set("initial_" + field, file.path(field));
-            payload.put("creationKey", text(body, "creationKey")); payload.put("creationHash", text(body, "creationHash"));
-        }
-        ObjectNode external =
-                object(
-                        "documentId",
-                        id,
-                        "documentType",
-                        type,
-                        "tenant",
-                        config.tenant(),
-                        "appInstanceId",
-                        config.appId());
-        for (JsonNode field : list(types.definition(type).workflow().path("externalFields")))
-            external.set(text(field), attributes.path(text(field)));
-        JsonNode result =
-                bpm.process(
-                        "/processes/" + encode(processId(type, auth)) + ":start",
-                        object("businessKey", id, "payload", payload, "externalIds", external),
-                        auth);
-        assertNoIncident(result);
-        return result;
+        String type = text(body, "typeCode"), id = text(body, "documentId"); if (id.isEmpty()) throw new ApiException(400, "Не задан идентификатор документа"); types.requireType(type);
+        JsonNode attrs = types.validate(type, body.path("attributes"), false);
+        documents.get(type, id, auth);
+        if (types.initialAttachmentRequired(type) && versions.attachments(id, auth).stream().noneMatch(AttachmentMetadata::current))
+            throw new ApiException(409, "Обязательное вложение ещё не зафиксировано");
+        WorkflowTask existing = tasks.findByDocument(id, auth).stream().findFirst().orElse(null);
+        if (existing != null) return object("id", "", "documentId", id, "state", "ACTIVE");
+        return process(workflows.start(new WorkflowContext(id, type, map(attrs), auth.login(), id, null, text(body, "creationKey"), text(body, "creationHash")), auth));
     }
-
-    private String processId(String type, AuthContext auth) {
-        JsonNode workflow = types.definition(type).workflow();
-        if (text(workflow, "creationSource").equals("configuration")) {
-            String alias = text(workflow.path("actions"), text(workflow, "creationAction"));
-            return text(workflow.path("processes"), alias);
-        }
-        for (int offset = 0; offset < 10000; ) {
-            JsonNode page =
-                    data.query(
-                                    "searchDocumentProcessSettings",
-                                    object("offset", offset, "limit", 500),
-                                    auth)
-                            .path("searchDocumentProcessSettings");
-            List<JsonNode> rows = list(page.path("elems"));
-            for (JsonNode row : rows)
-                if (!row.path("enabled").equals(MAPPER.getNodeFactory().booleanNode(false))
-                        && type.equals(text(row.path("documentType"), "id"))) {
-                    String id = text(row, "processId");
-                    if (id.isEmpty())
-                        throw new ApiException(
-                                400, "Для вида документа " + type + " не задан процесс создания");
-                    return id;
-                }
-            offset += rows.size();
-            if (rows.isEmpty() || offset >= number(page, "count", offset)) break;
-        }
-        throw new ApiException(
-                400, "Для вида документа " + type + " не настроен активный процесс создания");
-    }
-
-    public JsonNode requireTask(String id, AuthContext auth) {
-        JsonNode task = tasks.find(id, auth);
-        if (task == null) throw new ApiException(404, "Активная задача не найдена");
-        return task;
-    }
-
-    private String type(JsonNode task, AuthContext auth) {
-        String type = attribute(task, "documentType");
-        // Existing process instances may predate the documentType task attribute.
-        // Resolve their actual document instead of assuming a customer's default type.
-        if (type.isEmpty()) {
-            String id = attribute(task, "documentId");
-            if (id.isEmpty()) throw new ApiException(502, "Задача не содержит идентификатор документа");
-            JsonNode page = data.query("searchDocument", object("cond", "it.documentId == '" + id.replace("'", "''") + "'", "offset", 0, "limit", 2), auth).path("searchDocument");
-            type = list(page.path("elems")).stream().filter(row -> id.equals(text(row, "documentId")))
-                .map(row -> text(row.path("documentType"), "id")).findFirst()
-                .orElseThrow(() -> new ApiException(404, "Документ задачи недоступен"));
-        }
-        types.requireType(type);
-        return type;
-    }
-
-    public List<JsonNode> actions(JsonNode task, AuthContext auth) {
-        JsonNode detail = tasks.details(task, auth);
-        if (!text(detail, "formType").equals("COMPLETIONS")) return List.of();
-        String documentType = type(task, auth);
-        List<JsonNode> result = new ArrayList<>();
-        int index = 0;
-        for (JsonNode option : list(detail.path("completions").path("options"))) {
-            index++;
-            JsonNode parameters = option.path("result");
-            if (!parameters.isObject() || parameters.isEmpty()) continue;
-            String status = types.status(documentType, text(parameters, text(types.definition(documentType).workflow().path("completion"), "statusField")));
-            if (Objects.equals(status, types.initialStatus(documentType))) status = null;
-            String code =
-                    status == null
-                            ? fallback(text(option, "label"), "completion_" + index)
-                            : status;
-            ObjectNode action =
-                    object(
-                            "code",
-                            code,
-                            "label",
-                            fallback(text(option, "label"), code),
-                            "tone",
-                            status == null ? "success" : types.tone(documentType, status),
-                            "result",
-                            parameters);
-            if (status != null) action.put("status", status);
-            result.add(action);
-        }
-        return result;
-    }
-
-    public JsonNode start(String id, AuthContext auth) {
-        requireTask(id, auth);
-        JsonNode result = bpm.system("/system/v6/usertasks:start", clientFields(id, auth), auth);
-        assertSuccess(result, id);
-        return result;
-    }
-
+    public JsonNode requireTask(String id, AuthContext auth) { WorkflowTask task = tasks.task(id, auth); if (task == null) throw new ApiException(404, "Активная задача не найдена"); return task(task, auth); }
+    WorkflowTask taskModel(String id, AuthContext auth) { WorkflowTask task = tasks.task(id, auth); if (task == null) throw new ApiException(404, "Активная задача не найдена"); return task; }
+    public JsonNode actions(WorkflowTask task) { return array(task.actions().stream().map(this::action).toList()); }
+    public JsonNode start(String id, AuthContext auth) { tasks.start(id, auth); return object("operationResults", List.of(object("userTaskId", id, "responseType", "SUCCESS"))); }
     public JsonNode complete(String id, JsonNode payload, AuthContext auth) {
-        JsonNode task = requireTask(id, auth);
-        JsonNode completionRules = types.definition(type(task, auth)).workflow().path("completion");
-        JsonNode parameters = payload.path("parameters");
-        String code = first(payload, "actionCode", "approvalStatus", "decision");
-        JsonNode selected =
-                actions(task, auth).stream()
-                        .filter(
-                                a ->
-                                        (!code.isEmpty() && code.equalsIgnoreCase(text(a, "code")))
-                                                || (parameters.isObject()
-                                                        && matchesParameters(
-                                                                parameters,
-                                                                a.path("result"),
-                                                                auth, text(completionRules, "assigneeField"))))
-                        .findFirst()
-                        .orElseThrow(
-                                () ->
-                                        new ApiException(
-                                                400, "Действие недоступно для текущей задачи"));
-        if (!text(task, "status").equals("STARTED")) start(id, auth);
-        ObjectNode completion = copy(selected.path("result"));
-        if (takeInWork(selected, completionRules))
-            completion.put(text(completionRules, "assigneeField"), auth.login());
-        ObjectNode body = clientFields(id, auth);
-        body.set("parameters", completion);
-        JsonNode result = bpm.system("/system/v6/usertasks:complete", body, auth);
-        assertSuccess(result, id);
-        String documentId = attribute(task, "documentId");
-        awaitDocumentStatus(documentId, text(completion, text(completionRules, "statusField")), auth);
-        if (takeInWork(selected, completionRules) && completionRules.path("autoStart").asBoolean()) startFollowUp(documentId, id, auth);
-        return result;
+        WorkflowTask task = taskModel(id, auth); String code = first(payload, "actionCode", "status", "decision"); JsonNode supplied = payload.path("parameters");
+        WorkflowAction selected = task.actions().stream().filter(action -> !code.isEmpty() && code.equalsIgnoreCase(action.code()) || supplied.isObject() && supplied.equals(attributes(action.parameters()))).findFirst().orElseThrow(() -> new ApiException(400, "Действие недоступно для текущей задачи"));
+        if (!"STARTED".equals(task.status())) tasks.start(id, auth); var parameters = new LinkedHashMap<>(selected.parameters()); JsonNode completion = types.definition(type(task, auth)).workflow().path("completion"); boolean assigned = takeInWork(selected, completion); if (assigned) parameters.put(text(completion, "assigneeField"), MAPPER.getNodeFactory().textNode(auth.login())); tasks.complete(id, parameters, auth); if (assigned && completion.path("autoStart").asBoolean()) tasks.findByDocument(task.documentId(), auth).stream().filter(next -> !id.equals(next.id())).filter(next -> Set.of("NEW", "ASSIGNED").contains(next.status())).findFirst().ifPresent(next -> tasks.start(next.id(), auth)); return object("operationResults", List.of(object("userTaskId", id, "responseType", "SUCCESS")));
     }
-
-    private void startFollowUp(String documentId, String completedTaskId, AuthContext auth) {
-        for (int attempt = 0; attempt < 20; attempt++) {
-            JsonNode next =
-                    tasks.byDocument(documentId, auth).stream()
-                            .filter(task -> !completedTaskId.equals(text(task, "id")))
-                            .filter(task -> Set.of("NEW", "ASSIGNED").contains(text(task, "status")))
-                            .findFirst()
-                            .orElse(null);
-            if (next != null) {
-                JsonNode started = bpm.system("/system/v6/usertasks:start", clientFields(text(next, "id"), auth), auth);
-                assertSuccess(started, text(next, "id"));
-                return;
-            }
-            if (attempt < 19) pause(250);
-        }
-    }
-
-    private static boolean takeInWork(JsonNode action, JsonNode rules) {
-        String status = text(action.path("result"), text(rules, "statusField"));
-        return list(rules.path("assignmentStatuses")).stream().anyMatch(value -> text(value).equalsIgnoreCase(status))
-            || list(rules.path("assignmentCodes")).stream().anyMatch(value -> text(value).equalsIgnoreCase(text(action, "code")) || text(value).equalsIgnoreCase(text(action, "label")));
-    }
-
-    /** Ждёт, пока асинхронное обновление карточки из БП станет видимо в DataSpace. */
-    private void awaitDocumentStatus(String documentId, String expected, AuthContext auth) {
-        if (documentId.isEmpty() || expected.isEmpty()) return;
-        for (int attempt = 0; attempt < 20; attempt++) {
-            JsonNode page =
-                    data.query(
-                                    "searchDocument",
-                                    object(
-                                            "cond",
-                                            "it.documentId == '" + documentId.replace("'", "''") + "'",
-                                            "offset",
-                                            0,
-                                            "limit",
-                                            2),
-                                    auth)
-                            .path("searchDocument");
-            boolean matched =
-                    list(page.path("elems")).stream()
-                            .filter(row -> documentId.equals(text(row, "documentId")))
-                            .anyMatch(row -> expected.equals(text(row.path(types.details(text(row.path("documentType"), "id"))), "status")));
-            if (matched) return;
-            if (attempt < 19) pause(250);
-        }
-        LogJson.info(
-                "Platform V document status was not updated in time",
-                object("documentId", documentId, "expectedStatus", expected));
-        throw new ApiException(
-                502,
-                "Platform V не обновила статус карточки документа "
-                        + documentId
-                        + " на "
-                        + expected
-                        + " после завершения задачи");
-    }
-
-    private static void pause(long milliseconds) {
-        try {
-            Thread.sleep(milliseconds);
-        } catch (InterruptedException error) {
-            Thread.currentThread().interrupt();
-            throw new ApiException(503, "Ожидание платформы прервано");
-        }
-    }
-
-    private boolean matchesParameters(JsonNode parameters, JsonNode result, AuthContext auth, String assigneeField) {
-        ObjectNode comparable = copy(parameters);
-        if (auth.login().equals(text(comparable, assigneeField)) && !result.has(assigneeField))
-            comparable.remove(assigneeField);
-        return comparable.equals(result);
-    }
-
-    private static ObjectNode clientFields(String id, AuthContext auth) {
-        return object(
-                "clientLogin",
-                auth.login(),
-                "clientName",
-                fallback(auth.fullName(), auth.login()),
-                "userTaskIds",
-                List.of(id));
-    }
-
-    public static void assertSuccess(JsonNode result, String id) {
-        for (JsonNode operation : list(result.path("operationResults")))
-            if (id.equals(text(operation, "userTaskId"))) {
-                if ("SUCCESS".equals(text(operation, "responseType"))) return;
-                throw new ApiException(
-                        502, "Платформа не выполнила действие: " + text(operation, "responseType"));
-            }
-        if (list(result.path("successIds")).stream().anyMatch(n -> id.equals(text(n)))) return;
-        if (result.has("successIds") || result.has("failedIds"))
-            throw new ApiException(502, "Платформа не выполнила действие по задаче " + id);
-    }
-
-    private static void assertNoIncident(JsonNode instance) {
-        JsonNode activity =
-                list(instance.path("currentActivities")).stream()
-                        .filter(n -> n.path("isIncident").asBoolean())
-                        .findFirst()
-                        .orElse(object());
-        if (instance.path("isIncident").asBoolean() || !activity.isEmpty())
-            LogJson.info(
-                    "Platform V process incident",
-                    object(
-                            "processInstanceId", text(instance, "id"),
-                            "state", text(instance, "state"),
-                            "definitionId", first(activity, "definitionId", "name"),
-                            "error", text(activity, "error")));
-        if (instance.path("isIncident").asBoolean() || !activity.isEmpty())
-            throw new ApiException(
-                    502,
-                    "Процесс Platform V запущен, но упал на "
-                            + fallback(
-                                    first(activity, "definitionId", "name"),
-                                    "неизвестной активности")
-                            + (text(activity, "error").isEmpty()
-                                    ? ""
-                                    : ": " + text(activity, "error")));
-    }
+    public String roleLabel(String role, AuthContext auth) { return tasks.roleLabel(role, auth); }
+    private String type(WorkflowTask task, AuthContext auth) { String type = task.documentType(); if (type.isEmpty()) type = types.types().stream().filter(value -> { try { return documents.get(value, task.documentId(), auth) != null; } catch (ApiException ignored) { return false; }}).findFirst().orElseThrow(() -> new ApiException(404, "Документ задачи недоступен")); types.requireType(type); return type; }
+    private static int priority(String status) { return switch (status) { case "STARTED" -> 0; case "ASSIGNED" -> 1; case "NEW" -> 2; default -> 3; }; }
+    private static boolean takeInWork(WorkflowAction action, JsonNode rules) { return list(rules.path("assignmentStatuses")).stream().anyMatch(value -> text(value).equalsIgnoreCase(action.status())) || list(rules.path("assignmentCodes")).stream().anyMatch(value -> text(value).equalsIgnoreCase(action.code())); }
+    private static Map<String, JsonNode> map(JsonNode node) { var result = new LinkedHashMap<String, JsonNode>(); node.properties().forEach(item -> result.put(item.getKey(), item.getValue())); return result; }
+    private static ObjectNode attributes(Map<String, JsonNode> values) { var result = object(); values.forEach(result::set); return result; }
+    private static AttachmentMetadata attachment(JsonNode file, String documentId) { String id = first(file, "attachmentId", "id"), reference = text(file, "storageReference"); if (id.isEmpty() || !documentId.equals(text(file, "documentId")) || reference.isEmpty()) throw new ApiException(400, "Неверные метаданные вложения"); return new AttachmentMetadata(id, id, documentId, text(file, "fileName"), text(file, "contentType"), number(file, "size", 0), 1, true, Instant.now(), new StorageReference(reference)); }
+    private ObjectNode task(WorkflowTask value, AuthContext auth) { var result = object("id", value.id(), "documentId", value.documentId(), "documentType", value.documentType(), "status", value.status(), "type", value.title(), "title", value.title(), "description", value.description(), "assignee", value.assignee(), "attributes", attributes(value.attributes())); result.set("availableActions", actions(value)); result.set("completions", object("options", value.actions().stream().map(action -> object("label", action.label(), "result", attributes(action.parameters()))).toList())); return result; }
+    private JsonNode executor(WorkflowTask value, AuthContext auth) { return object("login", value.assignee().isEmpty() ? null : value.assignee(), "name", value.assigneeName().isEmpty() ? null : value.assigneeName(), "role", value.assigneeRole().isEmpty() ? null : value.assigneeRole(), "roleLabel", roleLabel(value.assigneeRole(), auth), "taskStatus", value.status(), "taskTitle", value.title()); }
+    private JsonNode action(WorkflowAction value) { var result = object("code", value.code(), "label", value.label(), "tone", value.tone(), "result", attributes(value.parameters())); if (!value.status().isEmpty()) result.put("status", value.status()); return result; }
+    private static String taskText(WorkflowTask task) { return (task.title() + " " + task.description() + " " + task.attributes().values()).toLowerCase(Locale.ROOT); }
+    private static JsonNode process(ProcessInstance value) { return object("id", value.id(), "documentId", value.documentId(), "state", value.state()); }
 }
