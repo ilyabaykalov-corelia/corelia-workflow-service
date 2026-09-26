@@ -23,3 +23,6 @@ mvn -f ../pom.xml -pl corelia-workflow-service -am package -DskipTests
 - [Локальная эксплуатация](../docs/operations.md)
 
 Правила изменения документов принадлежат document-service; постоянное хранение находится в DataSpace/DAM, существующие процессы исполняются платформой. Системные тесты взаимодействия находятся в соседнем модуле `corelia-system-tests`.
+# Документация
+
+Процессы, tasks и граница ответственности workflow-service описаны в [docs/README.md](docs/README.md).
