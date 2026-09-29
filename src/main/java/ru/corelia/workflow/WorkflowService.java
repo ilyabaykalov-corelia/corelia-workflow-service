@@ -13,14 +13,17 @@ import ru.corelia.provider.DocumentVersionStore;
 import ru.corelia.provider.TaskProvider;
 import ru.corelia.provider.WorkflowProvider;
 import ru.corelia.provider.model.*;
+import ru.corelia.transport.ServiceClient;
 import tools.jackson.databind.JsonNode;
 import tools.jackson.databind.node.ObjectNode;
 
 /** Сценарии Corelia для процессов и задач без знания provider transport. */
 @Service
 public class WorkflowService {
-    private final DocumentTypeCatalog types; private final DocumentStore documents; private final DocumentVersionStore versions; private final WorkflowProvider workflows; private final TaskProvider tasks;
-    public WorkflowService(DocumentTypeCatalog types, DocumentStore documents, DocumentVersionStore versions, WorkflowProvider workflows, TaskProvider tasks) { this.types = types; this.documents = documents; this.versions = versions; this.workflows = workflows; this.tasks = tasks; }
+    private final DocumentTypeCatalog types; private final DocumentStore documents; private final DocumentVersionStore versions; private final WorkflowProvider workflows; private final TaskProvider tasks; private final ServiceClient services;
+    @org.springframework.beans.factory.annotation.Autowired
+    public WorkflowService(DocumentTypeCatalog types, DocumentStore documents, DocumentVersionStore versions, WorkflowProvider workflows, TaskProvider tasks, ServiceClient services) { this.types = types; this.documents = documents; this.versions = versions; this.workflows = workflows; this.tasks = tasks; this.services = services; }
+    public WorkflowService(DocumentTypeCatalog types, DocumentStore documents, DocumentVersionStore versions, WorkflowProvider workflows, TaskProvider tasks) { this(types, documents, versions, workflows, tasks, null); }
     public JsonNode search(JsonNode body, AuthContext auth) {
         String queue = text(body, "queue").toUpperCase(Locale.ROOT), requested = text(body, "status").toUpperCase(Locale.ROOT), query = text(body, "query").toLowerCase(Locale.ROOT);
         Set<String> allowed = Set.of("NEW", "ASSIGNED", "STARTED", "COMPLETED", "ABORTED"); Set<String> statuses = allowed.contains(requested) ? Set.of(requested) : Set.of("NEW", "ASSIGNED", "STARTED");
@@ -50,7 +53,15 @@ public class WorkflowService {
     public JsonNode complete(String id, JsonNode payload, AuthContext auth) {
         WorkflowTask task = taskModel(id, auth); String code = first(payload, "actionCode", "status", "decision"); JsonNode supplied = payload.path("parameters");
         WorkflowAction selected = task.actions().stream().filter(action -> !code.isEmpty() && code.equalsIgnoreCase(action.code()) || supplied.isObject() && supplied.equals(attributes(action.parameters()))).findFirst().orElseThrow(() -> new ApiException(400, "Действие недоступно для текущей задачи"));
-        if (!"STARTED".equals(task.status())) tasks.start(id, auth); var parameters = new LinkedHashMap<>(selected.parameters()); JsonNode completion = types.definition(type(task, auth)).workflow().path("completion"); boolean assigned = takeInWork(selected, completion); if (assigned) parameters.put(text(completion, "assigneeField"), MAPPER.getNodeFactory().textNode(auth.login())); tasks.complete(id, parameters, auth); if (assigned && completion.path("autoStart").asBoolean()) tasks.findByDocument(task.documentId(), auth).stream().filter(next -> !id.equals(next.id())).filter(next -> Set.of("NEW", "ASSIGNED").contains(next.status())).findFirst().ifPresent(next -> tasks.start(next.id(), auth)); return object("operationResults", List.of(object("userTaskId", id, "responseType", "SUCCESS")));
+        String type = type(task, auth); if (!"STARTED".equals(task.status())) tasks.start(id, auth); var parameters = new LinkedHashMap<>(selected.parameters()); JsonNode completion = types.definition(type).workflow().path("completion"); boolean assigned = takeInWork(selected, completion); if (assigned) parameters.put(text(completion, "assigneeField"), MAPPER.getNodeFactory().textNode(auth.login())); commitDocumentCommand(task, selected, type, auth); tasks.complete(id, parameters, auth); if (assigned && completion.path("autoStart").asBoolean()) tasks.findByDocument(task.documentId(), auth).stream().filter(next -> !id.equals(next.id())).filter(next -> Set.of("NEW", "ASSIGNED").contains(next.status())).findFirst().ifPresent(next -> tasks.start(next.id(), auth)); return object("operationResults", List.of(object("userTaskId", id, "responseType", "SUCCESS")));
+    }
+    private void commitDocumentCommand(WorkflowTask task, WorkflowAction action, String type, AuthContext auth) {
+        JsonNode commands = types.definition(type).workflow().path("commands"); String command = commands.properties().stream().filter(entry -> action.status().equals(text(entry.getValue(), "to"))).map(Map.Entry::getKey).findFirst().orElse("");
+        if (command.isEmpty()) return;
+        if (services == null) throw new IllegalStateException("Не настроен внутренний клиент document-service");
+        JsonNode state = services.call("document", "/internal/v1/documents/" + type + "/" + task.documentId(), "GET", null, auth);
+        String requestId = UUID.nameUUIDFromBytes((task.id() + ":" + command).getBytes(java.nio.charset.StandardCharsets.UTF_8)).toString();
+        services.call("document", "/internal/v1/documents/" + type + "/" + task.documentId() + "/workflow-commands/" + command, "POST", object("requestId", requestId, "expectedVersion", number(state, "currentVersion", -1), "changeToken", text(state, "changeToken")), auth);
     }
     public String roleLabel(String role, AuthContext auth) { return tasks.roleLabel(role, auth); }
     private String type(WorkflowTask task, AuthContext auth) { String type = task.documentType(); if (type.isEmpty()) type = types.types().stream().filter(value -> { try { return documents.get(value, task.documentId(), auth) != null; } catch (ApiException ignored) { return false; }}).findFirst().orElseThrow(() -> new ApiException(404, "Документ задачи недоступен")); types.requireType(type); return type; }
