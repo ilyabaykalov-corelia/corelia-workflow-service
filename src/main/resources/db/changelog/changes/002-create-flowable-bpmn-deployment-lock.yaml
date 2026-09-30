@@ -1,0 +1,21 @@
+databaseChangeLog:
+  - changeSet:
+      id: workflow-002-create-flowable-bpmn-deployment-lock
+      author: corelia
+      changes:
+        - createTable:
+            tableName: flowable_bpmn_deployment_lock
+            columns:
+              - column:
+                  name: lock_id
+                  type: INT
+                  constraints:
+                    nullable: false
+                    primaryKey: true
+                    primaryKeyName: pk_flowable_bpmn_deployment_lock
+        - insert:
+            tableName: flowable_bpmn_deployment_lock
+            columns:
+              - column:
+                  name: lock_id
+                  valueNumeric: 1
