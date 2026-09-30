@@ -46,6 +46,11 @@ public class WorkflowController {
         return workflow.process(id, requests.auth(r));
     }
 
+    @GetMapping("/admin/workflows")
+    public JsonNode definitions(HttpServletRequest r) {
+        return workflow.definitions(requests.auth(r));
+    }
+
     @PostMapping("/tasks/search")
     public JsonNode search(HttpServletRequest r) {
         return workflow.search(requests.body(r), requests.auth(r));
