@@ -12,6 +12,7 @@ import ru.corelia.provider.DocumentStore;
 import ru.corelia.provider.DocumentVersionStore;
 import ru.corelia.provider.TaskProvider;
 import ru.corelia.provider.WorkflowProvider;
+import ru.corelia.provider.WorkflowServiceTaskExecutor;
 import ru.corelia.provider.model.*;
 import ru.corelia.transport.ServiceClient;
 import tools.jackson.databind.JsonNode;
@@ -19,7 +20,7 @@ import tools.jackson.databind.node.ObjectNode;
 
 /** Сценарии Corelia для процессов и задач без знания provider transport. */
 @Service
-public class WorkflowService {
+public class WorkflowService implements WorkflowServiceTaskExecutor {
     private final DocumentTypeCatalog types; private final DocumentStore documents; private final DocumentVersionStore versions; private final WorkflowProvider workflows; private final TaskProvider tasks; private final ServiceClient services;
     @org.springframework.beans.factory.annotation.Autowired
     public WorkflowService(DocumentTypeCatalog types, DocumentStore documents, DocumentVersionStore versions, WorkflowProvider workflows, TaskProvider tasks, ServiceClient services) { this.types = types; this.documents = documents; this.versions = versions; this.workflows = workflows; this.tasks = tasks; this.services = services; }
@@ -45,6 +46,21 @@ public class WorkflowService {
         WorkflowTask existing = tasks.findByDocument(id, auth).stream().findFirst().orElse(null);
         if (existing != null) return object("id", "", "documentId", id, "state", "ACTIVE");
         return process(workflows.start(new WorkflowContext(id, type, map(attrs), auth.login(), id, null, text(body, "creationKey"), text(body, "creationHash")), auth));
+    }
+    /** Выполняет идемпотентную document command из асинхронной BPMN service task. */
+    @Override
+    public void execute(WorkflowServiceTask task) {
+        if (!"document-command".equals(task.taskType()))
+            throw new IllegalArgumentException("Неподдерживаемый тип BPMN service task: " + task.taskType());
+        if (task.documentId().isBlank() || task.documentType().isBlank() || task.command().isBlank())
+            throw new IllegalArgumentException("BPMN service task не содержит контекст документа или команду");
+        types.requireType(task.documentType());
+        if (!types.definition(task.documentType()).workflow().path("commands").path(task.command()).isObject())
+            throw new IllegalArgumentException("Workflow-команда не настроена для вида документа: " + task.command());
+        if (services == null) throw new IllegalStateException("Не настроен внутренний клиент document-service");
+        JsonNode state = services.call("document", "/internal/v1/documents/" + task.documentType() + "/" + task.documentId(), "GET", null, null);
+        String requestId = UUID.nameUUIDFromBytes((task.processInstanceId() + ":" + task.executionId() + ":" + task.taskId()).getBytes(java.nio.charset.StandardCharsets.UTF_8)).toString();
+        services.call("document", "/internal/v1/documents/" + task.documentType() + "/" + task.documentId() + "/workflow-commands/" + task.command(), "POST", object("requestId", requestId, "expectedVersion", number(state, "currentVersion", -1), "changeToken", text(state, "changeToken")), null);
     }
     public JsonNode requireTask(String id, AuthContext auth) { WorkflowTask task = tasks.task(id, auth); if (task == null) throw new ApiException(404, "Активная задача не найдена"); return task(task, auth); }
     WorkflowTask taskModel(String id, AuthContext auth) { WorkflowTask task = tasks.task(id, auth); if (task == null) throw new ApiException(404, "Активная задача не найдена"); return task; }
