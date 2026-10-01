@@ -25,6 +25,14 @@ public class WorkflowDraftRepository {
                 result.getTimestamp(4).toInstant(), result.getString(5)), key).stream().findFirst();
     }
 
+    public List<Draft> all() {
+        return jdbc.query("""
+                select workflow_key, name, bpmn_xml, updated_at, updated_by
+                  from workflow_draft order by workflow_key
+                """, (result, row) -> new Draft(result.getString(1), result.getString(2), result.getString(3),
+                result.getTimestamp(4).toInstant(), result.getString(5)));
+    }
+
     public void create(Draft draft) {
         jdbc.update("""
                 insert into workflow_draft (workflow_key, name, bpmn_xml, updated_at, updated_by)

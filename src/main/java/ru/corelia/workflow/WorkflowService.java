@@ -35,7 +35,13 @@ public class WorkflowService implements WorkflowServiceTaskExecutor {
     public JsonNode summary(AuthContext auth) { return object("my", number(search(object("queue", "MY"), auth), "total", 0), "available", number(search(object("queue", "AVAILABLE"), auth), "total", 0)); }
     /** Возвращает provider-neutral перечень опубликованных процессов для административного UI. */
     public JsonNode definitions(AuthContext auth) {
-        designer(); return object("editEnabled", designerEditEnabled, "items", workflows.definitions(auth).stream().map(value -> object(
+        designer(); var definitions = new TreeMap<String, WorkflowDefinition>();
+        workflows.definitions(auth).forEach(value -> definitions.put(value.key(), value));
+        if (drafts != null) for (var draft : drafts.all()) definitions.compute(draft.key(), (key, published) -> published == null
+                ? new WorkflowDefinition(draft.name(), draft.key(), 0, true, "DRAFT", null, null, 0)
+                : new WorkflowDefinition(published.name(), published.key(), published.publishedVersion(), true, published.status(),
+                        published.lastPublishedAt(), published.publishedBy(), published.activeInstances()));
+        return object("editEnabled", designerEditEnabled, "items", definitions.values().stream().map(value -> object(
                 "name", value.name(), "key", value.key(), "publishedVersion", value.publishedVersion(),
                 "draft", value.draft(), "status", value.status(), "lastPublishedAt", value.lastPublishedAt() == null ? null : value.lastPublishedAt().toString(),
                 "publishedBy", value.publishedBy(), "activeInstances", value.activeInstances())).toList());
