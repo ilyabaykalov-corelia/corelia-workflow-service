@@ -69,6 +69,18 @@ public class WorkflowService implements WorkflowServiceTaskExecutor {
         return object("valid", validation.valid(), "errors", validation.errors().stream()
                 .map(error -> object("code", error.code(), "message", error.message())).toList());
     }
+    /** Публикует сохранённый и проверенный BPMN как неизменяемую версию workflow provider. */
+    public JsonNode publishDraft(String key, AuthContext auth) {
+        if (drafts == null) throw new IllegalStateException("Не настроено хранилище workflow drafts");
+        var current = drafts.find(workflowKey(key)).orElseThrow(() -> new ApiException(404, "Черновик процесса не найден"));
+        var validation = workflows.validateDefinition(current.key(), current.bpmnXml(), auth);
+        if (!validation.valid()) return object("published", false, "valid", false, "errors", validation.errors().stream()
+                .map(error -> object("code", error.code(), "message", error.message())).toList());
+        var definition = workflows.publishDefinition(current.key(), current.name(), current.bpmnXml(), auth);
+        drafts.audit(current.key(), "published", auth.login());
+        return object("published", true, "valid", true, "key", definition.key(), "version", definition.publishedVersion(),
+                "publishedAt", definition.lastPublishedAt().toString());
+    }
     public JsonNode documentWorkflow(String type, String documentId, AuthContext auth) {
         types.requireType(type); WorkflowTask task = tasks.findByDocument(documentId, auth).stream().min(Comparator.comparingInt(value -> priority(value.status()))).orElse(null);
         return task == null ? object("task", null, "availableActions", List.of(), "executor", null) : object("task", task(task, auth), "availableActions", actions(task), "executor", executor(task, auth));
