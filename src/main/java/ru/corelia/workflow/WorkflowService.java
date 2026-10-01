@@ -81,6 +81,18 @@ public class WorkflowService implements WorkflowServiceTaskExecutor {
         return object("published", true, "valid", true, "key", definition.key(), "version", definition.publishedVersion(),
                 "publishedAt", definition.lastPublishedAt().toString());
     }
+    /** Импортирует XML в существующий черновик без публикации процесса. */
+    public JsonNode importDraft(String key, JsonNode body, AuthContext auth) {
+        JsonNode saved = saveDraft(key, body, auth);
+        if (drafts != null) drafts.audit(workflowKey(key), "imported", auth.login());
+        return saved;
+    }
+    /** Экспортирует сохранённый XML черновика для переноса между средами. */
+    public JsonNode exportDraft(String key) {
+        if (drafts == null) throw new IllegalStateException("Не настроено хранилище workflow drafts");
+        var current = drafts.find(workflowKey(key)).orElseThrow(() -> new ApiException(404, "Черновик процесса не найден"));
+        return object("key", current.key(), "name", current.name(), "bpmnXml", current.bpmnXml());
+    }
     public JsonNode documentWorkflow(String type, String documentId, AuthContext auth) {
         types.requireType(type); WorkflowTask task = tasks.findByDocument(documentId, auth).stream().min(Comparator.comparingInt(value -> priority(value.status()))).orElse(null);
         return task == null ? object("task", null, "availableActions", List.of(), "executor", null) : object("task", task(task, auth), "availableActions", actions(task), "executor", executor(task, auth));
