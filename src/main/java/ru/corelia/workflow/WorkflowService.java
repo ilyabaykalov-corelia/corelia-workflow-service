@@ -93,6 +93,14 @@ public class WorkflowService implements WorkflowServiceTaskExecutor {
         var current = drafts.find(workflowKey(key)).orElseThrow(() -> new ApiException(404, "Черновик процесса не найден"));
         return object("key", current.key(), "name", current.name(), "bpmnXml", current.bpmnXml());
     }
+    /** Возвращает неизменяемый журнал административных операций процесса. */
+    public JsonNode audit(String key) {
+        if (drafts == null) throw new IllegalStateException("Не настроено хранилище workflow drafts");
+        String workflowKey = workflowKey(key);
+        if (drafts.find(workflowKey).isEmpty()) throw new ApiException(404, "Черновик процесса не найден");
+        return object("items", drafts.history(workflowKey).stream().map(event -> object(
+                "event", event.eventType(), "at", event.occurredAt().toString(), "by", event.occurredBy())).toList());
+    }
     public JsonNode documentWorkflow(String type, String documentId, AuthContext auth) {
         types.requireType(type); WorkflowTask task = tasks.findByDocument(documentId, auth).stream().min(Comparator.comparingInt(value -> priority(value.status()))).orElse(null);
         return task == null ? object("task", null, "availableActions", List.of(), "executor", null) : object("task", task(task, auth), "availableActions", actions(task), "executor", executor(task, auth));

@@ -3,6 +3,7 @@ package ru.corelia.workflow;
 import java.sql.Timestamp;
 import java.time.Instant;
 import java.util.Optional;
+import java.util.List;
 import java.util.UUID;
 import org.springframework.jdbc.core.JdbcTemplate;
 import org.springframework.stereotype.Repository;
@@ -45,5 +46,13 @@ public class WorkflowDraftRepository {
                 """, UUID.randomUUID().toString(), key, eventType, Timestamp.from(Instant.now()), actor);
     }
 
+    public List<AuditEvent> history(String key) {
+        return jdbc.query("""
+                select event_type, occurred_at, occurred_by from workflow_audit
+                 where workflow_key = ? order by occurred_at desc
+                """, (result, row) -> new AuditEvent(result.getString(1), result.getTimestamp(2).toInstant(), result.getString(3)), key);
+    }
+
     public record Draft(String key, String name, String bpmnXml, Instant updatedAt, String updatedBy) {}
+    public record AuditEvent(String eventType, Instant occurredAt, String occurredBy) {}
 }

@@ -72,6 +72,9 @@ public class WorkflowController {
     @GetMapping("/admin/workflows/{key}/export")
     public JsonNode exportDraft(@PathVariable String key) { return workflow.exportDraft(key); }
 
+    @GetMapping("/admin/workflows/{key}/audit")
+    public JsonNode audit(@PathVariable String key) { return workflow.audit(key); }
+
     @PostMapping("/tasks/search")
     public JsonNode search(HttpServletRequest r) {
         return workflow.search(requests.body(r), requests.auth(r));
