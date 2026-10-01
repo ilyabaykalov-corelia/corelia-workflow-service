@@ -60,6 +60,15 @@ public class WorkflowService implements WorkflowServiceTaskExecutor {
         drafts.update(next); drafts.audit(next.key(), "edited", auth.login());
         return draft(next);
     }
+    /** Проверяет сохранённый черновик перед публикацией и сохраняет факт успешной проверки в журнале. */
+    public JsonNode validateDraft(String key, AuthContext auth) {
+        if (drafts == null) throw new IllegalStateException("Не настроено хранилище workflow drafts");
+        var current = drafts.find(workflowKey(key)).orElseThrow(() -> new ApiException(404, "Черновик процесса не найден"));
+        var validation = workflows.validateDefinition(current.key(), current.bpmnXml(), auth);
+        if (validation.valid()) drafts.audit(current.key(), "validated", auth.login());
+        return object("valid", validation.valid(), "errors", validation.errors().stream()
+                .map(error -> object("code", error.code(), "message", error.message())).toList());
+    }
     public JsonNode documentWorkflow(String type, String documentId, AuthContext auth) {
         types.requireType(type); WorkflowTask task = tasks.findByDocument(documentId, auth).stream().min(Comparator.comparingInt(value -> priority(value.status()))).orElse(null);
         return task == null ? object("task", null, "availableActions", List.of(), "executor", null) : object("task", task(task, auth), "availableActions", actions(task), "executor", executor(task, auth));

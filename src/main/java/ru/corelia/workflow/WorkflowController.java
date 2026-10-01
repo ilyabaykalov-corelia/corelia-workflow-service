@@ -60,6 +60,9 @@ public class WorkflowController {
     @PutMapping("/admin/workflows/{key}/draft")
     public JsonNode saveDraft(@PathVariable String key, HttpServletRequest r) { return workflow.saveDraft(key, requests.body(r), requests.auth(r)); }
 
+    @PostMapping("/admin/workflows/{key}/validate")
+    public JsonNode validateDraft(@PathVariable String key, HttpServletRequest r) { return workflow.validateDraft(key, requests.auth(r)); }
+
     @PostMapping("/tasks/search")
     public JsonNode search(HttpServletRequest r) {
         return workflow.search(requests.body(r), requests.auth(r));
