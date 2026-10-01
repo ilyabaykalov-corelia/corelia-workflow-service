@@ -3,3 +3,5 @@ databaseChangeLog:
       file: db/changelog/changes/001-create-process-binding-table.yaml
   - include:
       file: db/changelog/changes/002-create-flowable-bpmn-deployment-lock.yaml
+  - include:
+      file: db/changelog/changes/003-create-workflow-drafts.yaml
