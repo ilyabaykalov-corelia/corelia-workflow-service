@@ -101,6 +101,14 @@ public class WorkflowService implements WorkflowServiceTaskExecutor {
         var current = drafts.find(workflowKey(key)).orElseThrow(() -> new ApiException(404, "Черновик процесса не найден"));
         return object("key", current.key(), "name", current.name(), "bpmnXml", current.bpmnXml());
     }
+    /** Выводит опубликованный процесс из эксплуатации, не удаляя его историю. */
+    public JsonNode retireDraft(String key, AuthContext auth) {
+        if (drafts == null) throw new IllegalStateException("Не настроено хранилище workflow drafts");
+        String workflowKey = workflowKey(key);
+        workflows.retireDefinition(workflowKey, auth);
+        drafts.audit(workflowKey, "retired", auth.login());
+        return object("retired", true, "key", workflowKey);
+    }
     /** Возвращает неизменяемый журнал административных операций процесса. */
     public JsonNode audit(String key) {
         designer();
