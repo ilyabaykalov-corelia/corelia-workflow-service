@@ -187,10 +187,11 @@ public class WorkflowService implements WorkflowServiceTaskExecutor {
     private static JsonNode draft(WorkflowDraftRepository.Draft value) { return object("key", value.key(), "name", value.name(), "bpmnXml", value.bpmnXml(), "updatedAt", value.updatedAt().toString(), "updatedBy", value.updatedBy()); }
     private static String emptyBpmn(String key, String name) { return """
             <?xml version="1.0" encoding="UTF-8"?>
-            <bpmn:definitions xmlns:bpmn="http://www.omg.org/spec/BPMN/20100524/MODEL" xmlns:corelia="urn:corelia:bpmn" targetNamespace="urn:corelia:bpmn">
+            <bpmn:definitions xmlns:bpmn="http://www.omg.org/spec/BPMN/20100524/MODEL" xmlns:bpmndi="http://www.omg.org/spec/BPMN/20100524/DI" xmlns:dc="http://www.omg.org/spec/DD/20100524/DC" xmlns:corelia="urn:corelia:bpmn" targetNamespace="urn:corelia:bpmn">
               <bpmn:process id="%s" name="%s" isExecutable="true"><bpmn:startEvent id="start" /></bpmn:process>
+              <bpmndi:BPMNDiagram id="BPMNDiagram_1"><bpmndi:BPMNPlane id="BPMNPlane_1" bpmnElement="%s"><bpmndi:BPMNShape id="start_di" bpmnElement="start"><dc:Bounds x="152" y="102" width="36" height="36" /></bpmndi:BPMNShape></bpmndi:BPMNPlane></bpmndi:BPMNDiagram>
             </bpmn:definitions>
-            """.formatted(key, xml(name)); }
+            """.formatted(key, xml(name), key); }
     private static String xml(String value) { return value.replace("&", "&amp;").replace("\"", "&quot;").replace("<", "&lt;").replace(">", "&gt;"); }
     private static boolean takeInWork(WorkflowAction action, JsonNode rules) { return list(rules.path("assignmentStatuses")).stream().anyMatch(value -> text(value).equalsIgnoreCase(action.status())) || list(rules.path("assignmentCodes")).stream().anyMatch(value -> text(value).equalsIgnoreCase(action.code())); }
     private static Map<String, JsonNode> map(JsonNode node) { var result = new LinkedHashMap<String, JsonNode>(); node.properties().forEach(item -> result.put(item.getKey(), item.getValue())); return result; }
