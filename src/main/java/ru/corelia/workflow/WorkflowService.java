@@ -11,6 +11,7 @@ import ru.corelia.configuration.DocumentTypeCatalog;
 import ru.corelia.http.ApiException;
 import ru.corelia.provider.DocumentStore;
 import ru.corelia.provider.DocumentVersionStore;
+import ru.corelia.provider.PermissionProvider;
 import ru.corelia.provider.TaskProvider;
 import ru.corelia.provider.WorkflowProvider;
 import ru.corelia.provider.WorkflowServiceTaskExecutor;
@@ -22,10 +23,10 @@ import tools.jackson.databind.node.ObjectNode;
 /** Сценарии Corelia для процессов и задач без знания provider transport. */
 @Service
 public class WorkflowService implements WorkflowServiceTaskExecutor {
-    private final DocumentTypeCatalog types; private final DocumentStore documents; private final DocumentVersionStore versions; private final WorkflowProvider workflows; private final TaskProvider tasks; private final ServiceClient services; private final WorkflowDraftRepository drafts; private final boolean designerEnabled; private final boolean designerEditEnabled;
+    private final DocumentTypeCatalog types; private final DocumentStore documents; private final DocumentVersionStore versions; private final WorkflowProvider workflows; private final TaskProvider tasks; private final PermissionProvider permissions; private final ServiceClient services; private final WorkflowDraftRepository drafts; private final boolean designerEnabled; private final boolean designerEditEnabled;
     @org.springframework.beans.factory.annotation.Autowired
-    public WorkflowService(DocumentTypeCatalog types, DocumentStore documents, DocumentVersionStore versions, WorkflowProvider workflows, TaskProvider tasks, ServiceClient services, WorkflowDraftRepository drafts, @Value("${corelia.designer.enabled:true}") boolean designerEnabled, @Value("${corelia.designer.edit-enabled:true}") boolean designerEditEnabled) { this.types = types; this.documents = documents; this.versions = versions; this.workflows = workflows; this.tasks = tasks; this.services = services; this.drafts = drafts; this.designerEnabled = designerEnabled; this.designerEditEnabled = designerEditEnabled; }
-    public WorkflowService(DocumentTypeCatalog types, DocumentStore documents, DocumentVersionStore versions, WorkflowProvider workflows, TaskProvider tasks) { this(types, documents, versions, workflows, tasks, null, null, true, true); }
+    public WorkflowService(DocumentTypeCatalog types, DocumentStore documents, DocumentVersionStore versions, WorkflowProvider workflows, TaskProvider tasks, PermissionProvider permissions, ServiceClient services, WorkflowDraftRepository drafts, @Value("${corelia.designer.enabled:true}") boolean designerEnabled, @Value("${corelia.designer.edit-enabled:true}") boolean designerEditEnabled) { this.types = types; this.documents = documents; this.versions = versions; this.workflows = workflows; this.tasks = tasks; this.permissions = permissions; this.services = services; this.drafts = drafts; this.designerEnabled = designerEnabled; this.designerEditEnabled = designerEditEnabled; }
+    public WorkflowService(DocumentTypeCatalog types, DocumentStore documents, DocumentVersionStore versions, WorkflowProvider workflows, TaskProvider tasks) { this(types, documents, versions, workflows, tasks, (permission, auth) -> {}, null, null, true, true); }
     public JsonNode search(JsonNode body, AuthContext auth) {
         String queue = text(body, "queue").toUpperCase(Locale.ROOT), requested = text(body, "status").toUpperCase(Locale.ROOT), query = text(body, "query").toLowerCase(Locale.ROOT);
         Set<String> allowed = Set.of("NEW", "ASSIGNED", "STARTED", "COMPLETED", "ABORTED"); Set<String> statuses = allowed.contains(requested) ? Set.of(requested) : Set.of("NEW", "ASSIGNED", "STARTED");
@@ -35,7 +36,7 @@ public class WorkflowService implements WorkflowServiceTaskExecutor {
     public JsonNode summary(AuthContext auth) { return object("my", number(search(object("queue", "MY"), auth), "total", 0), "available", number(search(object("queue", "AVAILABLE"), auth), "total", 0)); }
     /** Возвращает provider-neutral перечень опубликованных процессов для административного UI. */
     public JsonNode definitions(AuthContext auth) {
-        designer(); var definitions = new TreeMap<String, WorkflowDefinition>();
+        designer(); requireDefinitionEdit(auth); var definitions = new TreeMap<String, WorkflowDefinition>();
         workflows.definitions(auth).forEach(value -> definitions.put(value.key(), value));
         if (drafts != null) for (var draft : drafts.all()) definitions.compute(draft.key(), (key, published) -> published == null
                 ? new WorkflowDefinition(draft.name(), draft.key(), 0, true, "DRAFT", null, null, 0)
@@ -47,7 +48,7 @@ public class WorkflowService implements WorkflowServiceTaskExecutor {
                 "publishedBy", value.publishedBy(), "activeInstances", value.activeInstances())).toList());
     }
     public JsonNode createDraft(JsonNode body, AuthContext auth) {
-        editable();
+        editable(); requireDefinitionEdit(auth);
         String key = workflowKey(text(body, "key")), name = workflowName(text(body, "name"));
         if (drafts == null) throw new IllegalStateException("Не настроено хранилище workflow drafts");
         if (drafts.find(key).isPresent()) throw new ApiException(409, "Черновик процесса с таким ключом уже существует");
@@ -55,13 +56,13 @@ public class WorkflowService implements WorkflowServiceTaskExecutor {
         drafts.create(draft); drafts.audit(key, "created", auth.login());
         return draft(draft);
     }
-    public JsonNode draft(String key) {
-        designer();
+    public JsonNode draft(String key, AuthContext auth) {
+        designer(); requireDefinitionEdit(auth);
         if (drafts == null) throw new IllegalStateException("Не настроено хранилище workflow drafts");
         return draft(drafts.find(workflowKey(key)).orElseThrow(() -> new ApiException(404, "Черновик процесса не найден")));
     }
     public JsonNode saveDraft(String key, JsonNode body, AuthContext auth) {
-        editable();
+        editable(); requireDefinitionEdit(auth);
         if (drafts == null) throw new IllegalStateException("Не настроено хранилище workflow drafts");
         var current = drafts.find(workflowKey(key)).orElseThrow(() -> new ApiException(404, "Черновик процесса не найден"));
         String name = body.has("name") ? workflowName(text(body, "name")) : current.name();
@@ -72,7 +73,7 @@ public class WorkflowService implements WorkflowServiceTaskExecutor {
     }
     /** Проверяет сохранённый черновик перед публикацией и сохраняет факт успешной проверки в журнале. */
     public JsonNode validateDraft(String key, AuthContext auth) {
-        editable();
+        editable(); requireDefinitionEdit(auth);
         if (drafts == null) throw new IllegalStateException("Не настроено хранилище workflow drafts");
         var current = drafts.find(workflowKey(key)).orElseThrow(() -> new ApiException(404, "Черновик процесса не найден"));
         var validation = workflows.validateDefinition(current.key(), current.bpmnXml(), auth);
@@ -82,7 +83,7 @@ public class WorkflowService implements WorkflowServiceTaskExecutor {
     }
     /** Публикует сохранённый и проверенный BPMN как неизменяемую версию workflow provider. */
     public JsonNode publishDraft(String key, AuthContext auth) {
-        editable();
+        editable(); permissions.require("workflow-definition:publish", auth);
         if (drafts == null) throw new IllegalStateException("Не настроено хранилище workflow drafts");
         var current = drafts.find(workflowKey(key)).orElseThrow(() -> new ApiException(404, "Черновик процесса не найден"));
         var validation = workflows.validateDefinition(current.key(), current.bpmnXml(), auth);
@@ -101,14 +102,15 @@ public class WorkflowService implements WorkflowServiceTaskExecutor {
         return saved;
     }
     /** Экспортирует сохранённый XML черновика для переноса между средами. */
-    public JsonNode exportDraft(String key) {
-        designer();
+    public JsonNode exportDraft(String key, AuthContext auth) {
+        designer(); requireDefinitionEdit(auth);
         if (drafts == null) throw new IllegalStateException("Не настроено хранилище workflow drafts");
         var current = drafts.find(workflowKey(key)).orElseThrow(() -> new ApiException(404, "Черновик процесса не найден"));
         return object("key", current.key(), "name", current.name(), "bpmnXml", current.bpmnXml());
     }
     /** Выводит опубликованный процесс из эксплуатации, не удаляя его историю. */
     public JsonNode retireDraft(String key, AuthContext auth) {
+        editable(); requireDefinitionEdit(auth);
         if (drafts == null) throw new IllegalStateException("Не настроено хранилище workflow drafts");
         String workflowKey = workflowKey(key);
         workflows.retireDefinition(workflowKey, auth);
@@ -116,8 +118,8 @@ public class WorkflowService implements WorkflowServiceTaskExecutor {
         return object("retired", true, "key", workflowKey);
     }
     /** Возвращает неизменяемый журнал административных операций процесса. */
-    public JsonNode audit(String key) {
-        designer();
+    public JsonNode audit(String key, AuthContext auth) {
+        designer(); requireDefinitionEdit(auth);
         if (drafts == null) throw new IllegalStateException("Не настроено хранилище workflow drafts");
         String workflowKey = workflowKey(key);
         if (drafts.find(workflowKey).isEmpty()) throw new ApiException(404, "Черновик процесса не найден");
@@ -157,11 +159,16 @@ public class WorkflowService implements WorkflowServiceTaskExecutor {
     public JsonNode requireTask(String id, AuthContext auth) { WorkflowTask task = tasks.task(id, auth); if (task == null) throw new ApiException(404, "Активная задача не найдена"); return task(task, auth); }
     WorkflowTask taskModel(String id, AuthContext auth) { WorkflowTask task = tasks.task(id, auth); if (task == null) throw new ApiException(404, "Активная задача не найдена"); return task; }
     public JsonNode actions(WorkflowTask task) { return array(task.actions().stream().map(this::action).toList()); }
-    public JsonNode start(String id, AuthContext auth) { tasks.start(id, auth); return object("operationResults", List.of(object("userTaskId", id, "responseType", "SUCCESS"))); }
+    public JsonNode start(String id, AuthContext auth) {
+        WorkflowTask task = taskModel(id, auth);
+        permissions.require("workflow:" + type(task, auth) + ":start", auth);
+        tasks.start(id, auth);
+        return object("operationResults", List.of(object("userTaskId", id, "responseType", "SUCCESS")));
+    }
     public JsonNode complete(String id, JsonNode payload, AuthContext auth) {
         WorkflowTask task = taskModel(id, auth); String code = first(payload, "actionCode", "status", "decision"); JsonNode supplied = payload.path("parameters");
         WorkflowAction selected = task.actions().stream().filter(action -> !code.isEmpty() && code.equalsIgnoreCase(action.code()) || supplied.isObject() && supplied.equals(attributes(action.parameters()))).findFirst().orElseThrow(() -> new ApiException(400, "Действие недоступно для текущей задачи"));
-        String type = type(task, auth); if (!"STARTED".equals(task.status())) tasks.start(id, auth); var parameters = new LinkedHashMap<>(selected.parameters()); JsonNode completion = types.definition(type).workflow().path("completion"); boolean assigned = takeInWork(selected, completion); if (assigned) parameters.put(text(completion, "assigneeField"), MAPPER.getNodeFactory().textNode(auth.login())); commitDocumentCommand(task, selected, type, auth); tasks.complete(id, parameters, auth); if (assigned && completion.path("autoStart").asBoolean()) tasks.findByDocument(task.documentId(), auth).stream().filter(next -> !id.equals(next.id())).filter(next -> Set.of("NEW", "ASSIGNED").contains(next.status())).findFirst().ifPresent(next -> tasks.start(next.id(), auth)); return object("operationResults", List.of(object("userTaskId", id, "responseType", "SUCCESS")));
+        String type = type(task, auth); permissions.require("workflow:" + type + ":" + selected.code(), auth); if (!"STARTED".equals(task.status())) tasks.start(id, auth); var parameters = new LinkedHashMap<>(selected.parameters()); JsonNode completion = types.definition(type).workflow().path("completion"); boolean assigned = takeInWork(selected, completion); if (assigned) parameters.put(text(completion, "assigneeField"), MAPPER.getNodeFactory().textNode(auth.login())); commitDocumentCommand(task, selected, type, auth); tasks.complete(id, parameters, auth); if (assigned && completion.path("autoStart").asBoolean()) tasks.findByDocument(task.documentId(), auth).stream().filter(next -> !id.equals(next.id())).filter(next -> Set.of("NEW", "ASSIGNED").contains(next.status())).findFirst().ifPresent(next -> tasks.start(next.id(), auth)); return object("operationResults", List.of(object("userTaskId", id, "responseType", "SUCCESS")));
     }
     private void commitDocumentCommand(WorkflowTask task, WorkflowAction action, String type, AuthContext auth) {
         JsonNode commands = types.definition(type).workflow().path("commands"); String command = commands.properties().stream().filter(entry -> action.status().equals(text(entry.getValue(), "to"))).map(Map.Entry::getKey).findFirst().orElse("");
@@ -176,6 +183,7 @@ public class WorkflowService implements WorkflowServiceTaskExecutor {
     private static int priority(String status) { return switch (status) { case "STARTED" -> 0; case "ASSIGNED" -> 1; case "NEW" -> 2; default -> 3; }; }
     private void designer() { if (!designerEnabled) throw new ApiException(404, "BPMN designer отключён конфигурацией"); }
     private void editable() { designer(); if (!designerEditEnabled) throw new ApiException(403, "Редактирование BPMN отключено конфигурацией"); }
+    private void requireDefinitionEdit(AuthContext auth) { permissions.require("workflow-definition:edit", auth); }
     private static String workflowKey(String value) {
         if (!value.matches("[A-Za-z][A-Za-z0-9_-]{0,127}")) throw new ApiException(400, "Некорректный ключ процесса");
         return value;

@@ -55,7 +55,7 @@ public class WorkflowController {
     public JsonNode createDraft(HttpServletRequest r) { return workflow.createDraft(requests.body(r), requests.auth(r)); }
 
     @GetMapping("/admin/workflows/{key}")
-    public JsonNode draft(@PathVariable String key) { return workflow.draft(key); }
+    public JsonNode draft(@PathVariable String key, HttpServletRequest r) { return workflow.draft(key, requests.auth(r)); }
 
     @PutMapping("/admin/workflows/{key}/draft")
     public JsonNode saveDraft(@PathVariable String key, HttpServletRequest r) { return workflow.saveDraft(key, requests.body(r), requests.auth(r)); }
@@ -73,10 +73,10 @@ public class WorkflowController {
     public JsonNode importDraft(@PathVariable String key, HttpServletRequest r) { return workflow.importDraft(key, requests.body(r), requests.auth(r)); }
 
     @GetMapping("/admin/workflows/{key}/export")
-    public JsonNode exportDraft(@PathVariable String key) { return workflow.exportDraft(key); }
+    public JsonNode exportDraft(@PathVariable String key, HttpServletRequest r) { return workflow.exportDraft(key, requests.auth(r)); }
 
     @GetMapping("/admin/workflows/{key}/audit")
-    public JsonNode audit(@PathVariable String key) { return workflow.audit(key); }
+    public JsonNode audit(@PathVariable String key, HttpServletRequest r) { return workflow.audit(key, requests.auth(r)); }
 
     @PostMapping("/tasks/search")
     public JsonNode search(HttpServletRequest r) {
