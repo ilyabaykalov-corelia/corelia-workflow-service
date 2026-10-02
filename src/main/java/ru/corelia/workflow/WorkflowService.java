@@ -90,7 +90,7 @@ public class WorkflowService implements WorkflowServiceTaskExecutor {
                 .map(error -> object("code", error.code(), "message", error.message())).toList());
         var definition = workflows.publishDefinition(current.key(), current.name(), current.bpmnXml(), auth);
         drafts.audit(current.key(), "published", auth.login());
-        return object("published", true, "valid", true, "key", definition.key(), "version", definition.publishedVersion(),
+        return object("published", true, "valid", true, "errors", List.of(), "key", definition.key(), "version", definition.publishedVersion(),
                 "publishedAt", definition.lastPublishedAt().toString());
     }
     /** Импортирует XML в существующий черновик без публикации процесса. */
