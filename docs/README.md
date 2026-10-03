@@ -1,3 +1,11 @@
 # Документация workflow-service
 
-Сервис запускает процессы, получает tasks и исполняет workflow actions через `WorkflowProvider`. Он не владеет бизнес-правилами изменения документа. Внутренний API: `/internal/v1/processes` и `/internal/v1/tasks`. См. [architecture](../../docs/architecture.md) и [API](../../docs/api.md).
+Внутренние endpoint `/internal/v1/processes` и `/internal/v1/tasks` принимают
+только доверенные сервисы. Определения имеют lifecycle `DRAFT`, `VALIDATED`,
+`PUBLISHED`, `RETIRED`; публикация не переписывает уже запущенные Flowable
+instances. BPMN service task передаётся владельцу domain command через
+`WorkflowServiceTaskExecutor`.
+
+Действие задачи допустимо лишь когда provider возвращает его как transition.
+Gateway и frontend не выбирают переход самостоятельно. Архитектурная граница:
+[workflow ADR](../../docs/adr/platform-v-007-bpmn-lifecycle.md).
