@@ -57,6 +57,9 @@ public class WorkflowController {
     @GetMapping("/admin/workflows/{key}")
     public JsonNode draft(@PathVariable String key, HttpServletRequest r) { return workflow.draft(key, requests.auth(r)); }
 
+    @GetMapping("/admin/workflows/{key}/view")
+    public JsonNode view(@PathVariable String key, HttpServletRequest r) { return workflow.view(key, requests.auth(r)); }
+
     @PutMapping("/admin/workflows/{key}/draft")
     public JsonNode saveDraft(@PathVariable String key, HttpServletRequest r) { return workflow.saveDraft(key, requests.body(r), requests.auth(r)); }
 

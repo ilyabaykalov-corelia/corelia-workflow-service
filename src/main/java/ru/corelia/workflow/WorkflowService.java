@@ -62,6 +62,18 @@ public class WorkflowService implements WorkflowServiceTaskExecutor {
         if (drafts == null) throw new IllegalStateException("Не настроено хранилище workflow drafts");
         return draft(drafts.find(workflowKey(key)).orElseThrow(() -> new ApiException(404, "Черновик процесса не найден")));
     }
+    /** Открывает черновик для редактирования либо опубликованный BPMN только для просмотра. */
+    public JsonNode view(String key, AuthContext auth) {
+        designer(); requireDefinitionEdit(auth);
+        String workflowKey = workflowKey(key);
+        if (drafts != null) {
+            var existing = drafts.find(workflowKey);
+            if (existing.isPresent()) return view(existing.get().key(), existing.get().name(), existing.get().bpmnXml(), !designerEditEnabled);
+        }
+        var definition = workflows.definitionBpmn(workflowKey, auth)
+                .orElseThrow(() -> new ApiException(404, "BPMN процесса не найден"));
+        return view(definition.key(), definition.name(), definition.bpmnXml(), true);
+    }
     public JsonNode saveDraft(String key, JsonNode body, AuthContext auth) {
         editable(); requireDefinitionEdit(auth);
         if (drafts == null) throw new IllegalStateException("Не настроено хранилище workflow drafts");
@@ -204,6 +216,7 @@ public class WorkflowService implements WorkflowServiceTaskExecutor {
         return value;
     }
     private static JsonNode draft(WorkflowDraftRepository.Draft value) { return object("key", value.key(), "name", value.name(), "bpmnXml", value.bpmnXml(), "updatedAt", value.updatedAt().toString(), "updatedBy", value.updatedBy()); }
+    private static JsonNode view(String key, String name, String bpmnXml, boolean readOnly) { return object("key", key, "name", name, "bpmnXml", bpmnXml, "readOnly", readOnly); }
     private static String emptyBpmn(String key, String name) { return """
             <?xml version="1.0" encoding="UTF-8"?>
             <bpmn:definitions xmlns:bpmn="http://www.omg.org/spec/BPMN/20100524/MODEL" xmlns:bpmndi="http://www.omg.org/spec/BPMN/20100524/DI" xmlns:dc="http://www.omg.org/spec/DD/20100524/DC" xmlns:corelia="urn:corelia:bpmn" targetNamespace="urn:corelia:bpmn">
