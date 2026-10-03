@@ -6,6 +6,7 @@ import java.time.Instant;
 import java.util.*;
 import org.springframework.stereotype.Service;
 import org.springframework.beans.factory.annotation.Value;
+import org.springframework.transaction.annotation.Transactional;
 import ru.corelia.auth.AuthContext;
 import ru.corelia.configuration.DocumentTypeCatalog;
 import ru.corelia.http.ApiException;
@@ -23,10 +24,10 @@ import tools.jackson.databind.node.ObjectNode;
 /** Сценарии Corelia для процессов и задач без знания provider transport. */
 @Service
 public class WorkflowService implements WorkflowServiceTaskExecutor {
-    private final DocumentTypeCatalog types; private final DocumentStore documents; private final DocumentVersionStore versions; private final WorkflowProvider workflows; private final TaskProvider tasks; private final PermissionProvider permissions; private final ServiceClient services; private final WorkflowDraftRepository drafts; private final boolean designerEnabled; private final boolean designerEditEnabled;
+    private final DocumentTypeCatalog types; private final DocumentStore documents; private final DocumentVersionStore versions; private final WorkflowProvider workflows; private final TaskProvider tasks; private final PermissionProvider permissions; private final ServiceClient services; private final WorkflowDraftRepository drafts; private final TaskCompletionReceiptRepository completions; private final boolean designerEnabled; private final boolean designerEditEnabled;
     @org.springframework.beans.factory.annotation.Autowired
-    public WorkflowService(DocumentTypeCatalog types, DocumentStore documents, DocumentVersionStore versions, WorkflowProvider workflows, TaskProvider tasks, PermissionProvider permissions, ServiceClient services, WorkflowDraftRepository drafts, @Value("${corelia.designer.enabled:true}") boolean designerEnabled, @Value("${corelia.designer.edit-enabled:true}") boolean designerEditEnabled) { this.types = types; this.documents = documents; this.versions = versions; this.workflows = workflows; this.tasks = tasks; this.permissions = permissions; this.services = services; this.drafts = drafts; this.designerEnabled = designerEnabled; this.designerEditEnabled = designerEditEnabled; }
-    public WorkflowService(DocumentTypeCatalog types, DocumentStore documents, DocumentVersionStore versions, WorkflowProvider workflows, TaskProvider tasks) { this(types, documents, versions, workflows, tasks, (permission, auth) -> {}, null, null, true, true); }
+    public WorkflowService(DocumentTypeCatalog types, DocumentStore documents, DocumentVersionStore versions, WorkflowProvider workflows, TaskProvider tasks, PermissionProvider permissions, ServiceClient services, WorkflowDraftRepository drafts, TaskCompletionReceiptRepository completions, @Value("${corelia.designer.enabled:true}") boolean designerEnabled, @Value("${corelia.designer.edit-enabled:true}") boolean designerEditEnabled) { this.types = types; this.documents = documents; this.versions = versions; this.workflows = workflows; this.tasks = tasks; this.permissions = permissions; this.services = services; this.drafts = drafts; this.completions = completions; this.designerEnabled = designerEnabled; this.designerEditEnabled = designerEditEnabled; }
+    public WorkflowService(DocumentTypeCatalog types, DocumentStore documents, DocumentVersionStore versions, WorkflowProvider workflows, TaskProvider tasks) { this(types, documents, versions, workflows, tasks, (permission, auth) -> {}, null, null, null, true, true); }
     public JsonNode search(JsonNode body, AuthContext auth) {
         String queue = text(body, "queue").toUpperCase(Locale.ROOT), requested = text(body, "status").toUpperCase(Locale.ROOT), query = text(body, "query").toLowerCase(Locale.ROOT);
         Set<String> allowed = Set.of("NEW", "ASSIGNED", "STARTED", "COMPLETED", "ABORTED"); Set<String> statuses = allowed.contains(requested) ? Set.of(requested) : Set.of("NEW", "ASSIGNED", "STARTED");
@@ -165,11 +166,21 @@ public class WorkflowService implements WorkflowServiceTaskExecutor {
         tasks.start(id, auth);
         return object("operationResults", List.of(object("userTaskId", id, "responseType", "SUCCESS")));
     }
+    @Transactional
     public JsonNode complete(String id, JsonNode payload, AuthContext auth) {
+        String body = write(payload), key = completionKey(id, payload, auth);
+        if (completions != null) {
+            var prior = completions.find(key);
+            if (prior.isPresent()) {
+                if (!body.equals(prior.get().body())) throw new ApiException(409, "requestId уже использован для другой команды");
+                return prior.get().response();
+            }
+        }
         WorkflowTask task = taskModel(id, auth); String code = first(payload, "actionCode", "status", "decision"); JsonNode supplied = payload.path("parameters");
         WorkflowAction selected = task.actions().stream().filter(action -> !code.isEmpty() && code.equalsIgnoreCase(action.code()) || supplied.isObject() && supplied.equals(attributes(action.parameters()))).findFirst().orElseThrow(() -> new ApiException(400, "Действие недоступно для текущей задачи"));
-        String type = type(task, auth); permissions.require("workflow:" + type + ":" + selected.code(), auth); if (!"STARTED".equals(task.status())) tasks.start(id, auth); var parameters = new LinkedHashMap<>(selected.parameters()); JsonNode completion = types.definition(type).workflow().path("completion"); boolean assigned = takeInWork(selected, completion); if (assigned) parameters.put(text(completion, "assigneeField"), MAPPER.getNodeFactory().textNode(auth.login())); commitDocumentCommand(task, selected, type, auth); tasks.complete(id, parameters, auth); if (assigned && completion.path("autoStart").asBoolean()) tasks.findByDocument(task.documentId(), auth).stream().filter(next -> !id.equals(next.id())).filter(next -> Set.of("NEW", "ASSIGNED").contains(next.status())).findFirst().ifPresent(next -> tasks.start(next.id(), auth)); return object("operationResults", List.of(object("userTaskId", id, "responseType", "SUCCESS")));
+        String type = type(task, auth); permissions.require("workflow:" + type + ":" + selected.code(), auth); if (!"STARTED".equals(task.status())) tasks.start(id, auth); var parameters = new LinkedHashMap<>(selected.parameters()); JsonNode completion = types.definition(type).workflow().path("completion"); boolean assigned = takeInWork(selected, completion); if (assigned) parameters.put(text(completion, "assigneeField"), MAPPER.getNodeFactory().textNode(auth.login())); commitDocumentCommand(task, selected, type, auth); tasks.complete(id, parameters, auth); if (assigned && completion.path("autoStart").asBoolean()) tasks.findByDocument(task.documentId(), auth).stream().filter(next -> !id.equals(next.id())).filter(next -> Set.of("NEW", "ASSIGNED").contains(next.status())).findFirst().ifPresent(next -> tasks.start(next.id(), auth)); JsonNode result = object("operationResults", List.of(object("userTaskId", id, "responseType", "SUCCESS"))); if (completions != null) completions.save(key, body, result); return result;
     }
+    private static String completionKey(String id, JsonNode payload, AuthContext auth) { String requestId = text(payload, "requestId"); if (requestId.isEmpty()) requestId = UUID.nameUUIDFromBytes((id + ":" + write(payload)).getBytes(java.nio.charset.StandardCharsets.UTF_8)).toString(); return id + ":" + auth.login() + ":" + requestId; }
     private void commitDocumentCommand(WorkflowTask task, WorkflowAction action, String type, AuthContext auth) {
         JsonNode commands = types.definition(type).workflow().path("commands"); String command = commands.properties().stream().filter(entry -> action.status().equals(text(entry.getValue(), "to"))).map(Map.Entry::getKey).findFirst().orElse("");
         if (command.isEmpty()) return;

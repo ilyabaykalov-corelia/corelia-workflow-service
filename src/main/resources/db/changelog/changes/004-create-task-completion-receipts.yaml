@@ -1,0 +1,30 @@
+databaseChangeLog:
+  - changeSet:
+      id: workflow-004-create-task-completion-receipts
+      author: corelia
+      changes:
+        - createTable:
+            tableName: task_completion_receipt
+            columns:
+              - column:
+                  name: idempotency_key
+                  type: VARCHAR(255)
+                  constraints:
+                    nullable: false
+                    primaryKey: true
+                    primaryKeyName: pk_task_completion_receipt
+              - column:
+                  name: request_body
+                  type: TEXT
+                  constraints:
+                    nullable: false
+              - column:
+                  name: response
+                  type: JSONB
+                  constraints:
+                    nullable: false
+              - column:
+                  name: completed_at
+                  type: TIMESTAMP WITH TIME ZONE
+                  constraints:
+                    nullable: false
