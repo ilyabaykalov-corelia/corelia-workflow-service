@@ -60,6 +60,14 @@ public class WorkflowController {
     @GetMapping("/admin/workflows/{key}/view")
     public JsonNode view(@PathVariable String key, HttpServletRequest r) { return workflow.view(key, requests.auth(r)); }
 
+    @GetMapping("/admin/workflows/{key}/runtime")
+    public JsonNode runtime(@PathVariable String key, HttpServletRequest r) { return workflow.runtime(key, requests.auth(r)); }
+
+    @GetMapping("/admin/workflows/{key}/active-documents")
+    public JsonNode activeDocuments(@PathVariable String key, @RequestParam(required = false) String activityId, HttpServletRequest r) {
+        return workflow.activeDocuments(key, activityId, requests.auth(r));
+    }
+
     @PutMapping("/admin/workflows/{key}/draft")
     public JsonNode saveDraft(@PathVariable String key, HttpServletRequest r) { return workflow.saveDraft(key, requests.body(r), requests.auth(r)); }
 

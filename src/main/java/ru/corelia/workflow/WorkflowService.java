@@ -74,6 +74,20 @@ public class WorkflowService implements WorkflowServiceTaskExecutor {
                 .orElseThrow(() -> new ApiException(404, "BPMN процесса не найден"));
         return view(definition.key(), definition.name(), definition.bpmnXml(), true);
     }
+    /** Возвращает доступную вызывающему пользователю runtime-статистику BPMN activity. */
+    public JsonNode runtime(String key, AuthContext auth) {
+        var runtime = visibleRuntime(key, auth);
+        return object("activeInstances", runtime.instances().size(), "activities", runtime.activityCounts().entrySet().stream()
+                .map(entry -> object("activityId", entry.getKey(), "activeInstances", entry.getValue())).toList());
+    }
+    /** Возвращает краткие данные документов активных экземпляров, при необходимости для одного activity. */
+    public JsonNode activeDocuments(String key, String activityId, AuthContext auth) {
+        var runtime = visibleRuntime(key, auth);
+        return object("items", runtime.instances().stream()
+                .filter(value -> activityId == null || activityId.isBlank() || value.instance().activityIds().contains(activityId))
+                .map(value -> document(value.document())).toList(), "total", runtime.instances().stream()
+                .filter(value -> activityId == null || activityId.isBlank() || value.instance().activityIds().contains(activityId)).count());
+    }
     public JsonNode saveDraft(String key, JsonNode body, AuthContext auth) {
         editable(); requireDefinitionEdit(auth);
         if (drafts == null) throw new IllegalStateException("Не настроено хранилище workflow drafts");
@@ -142,6 +156,20 @@ public class WorkflowService implements WorkflowServiceTaskExecutor {
     public JsonNode documentWorkflow(String type, String documentId, AuthContext auth) {
         types.requireType(type); WorkflowTask task = tasks.findByDocument(documentId, auth).stream().min(Comparator.comparingInt(value -> priority(value.status()))).orElse(null);
         return task == null ? object("task", null, "availableActions", List.of(), "executor", null) : object("task", task(task, auth), "availableActions", actions(task), "executor", executor(task, auth));
+    }
+    private VisibleRuntime visibleRuntime(String key, AuthContext auth) {
+        designer(); requireDefinitionEdit(auth);
+        var source = workflows.runtime(workflowKey(key), auth);
+        var documentsById = new HashMap<String, DocumentSnapshot>();
+        documents.search(new DocumentSearchRequest(null, 0, 10000), auth).items()
+                .forEach(document -> documentsById.put(document.typeCode() + "\\u0000" + document.id(), document));
+        var instances = source.instances().stream()
+                .filter(instance -> documentsById.containsKey(instance.documentType() + "\\u0000" + instance.documentId()))
+                .map(instance -> new VisibleInstance(instance, documentsById.get(instance.documentType() + "\\u0000" + instance.documentId())))
+                .toList();
+        var counts = new TreeMap<String, Long>();
+        instances.forEach(instance -> instance.instance().activityIds().forEach(activityId -> counts.merge(activityId, 1L, Long::sum)));
+        return new VisibleRuntime(instances, counts);
     }
     public JsonNode process(String id, AuthContext auth) { return process(workflows.process(id, auth)); }
     public JsonNode create(JsonNode body, AuthContext auth) {
@@ -234,4 +262,11 @@ public class WorkflowService implements WorkflowServiceTaskExecutor {
     private JsonNode action(WorkflowAction value) { var result = object("code", value.code(), "label", value.label(), "tone", value.tone(), "result", attributes(value.parameters())); if (!value.status().isEmpty()) result.put("status", value.status()); return result; }
     private static String taskText(WorkflowTask task) { return (task.title() + " " + task.description() + " " + task.attributes().values()).toLowerCase(Locale.ROOT); }
     private static JsonNode process(ProcessInstance value) { return object("id", value.id(), "documentId", value.documentId(), "state", value.state()); }
+    private JsonNode document(DocumentSnapshot value) {
+        return object("id", value.id(), "typeCode", value.typeCode(), "typeName", types.name(value.typeCode()),
+                "status", value.status(), "statusLabel", types.label(value.typeCode(), value.status()),
+                "createdAt", value.createdAt() == null ? null : value.createdAt().toString());
+    }
+    private record VisibleInstance(WorkflowActiveInstance instance, DocumentSnapshot document) {}
+    private record VisibleRuntime(List<VisibleInstance> instances, Map<String, Long> activityCounts) {}
 }
