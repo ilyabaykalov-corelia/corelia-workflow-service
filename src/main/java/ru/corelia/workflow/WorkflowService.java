@@ -149,16 +149,16 @@ public class WorkflowService implements WorkflowServiceTaskExecutor {
     /** Экспортирует текущий опубликованный BPMN либо XML ещё не опубликованного черновика. */
     public JsonNode exportDraft(String key, AuthContext auth) {
         designer(); requireDefinitionEdit(auth);
-        if (drafts == null) throw new IllegalStateException("Не настроено хранилище workflow drafts");
         String workflowKey = workflowKey(key);
+        var definition = workflows.definitionBpmn(workflowKey, auth);
+        if (definition.isPresent()) return object("key", definition.get().key(), "name", definition.get().name(), "bpmnXml", definition.get().bpmnXml(),
+                "publishedVersion", definition.get().publishedVersion(), "definitionId", definition.get().definitionId(), "deploymentId", definition.get().deploymentId());
+        if (drafts == null) throw new IllegalStateException("Не настроено хранилище workflow drafts");
         if (drafts != null) {
             var current = drafts.find(workflowKey);
             if (current.isPresent()) return object("key", current.get().key(), "name", current.get().name(), "bpmnXml", current.get().bpmnXml());
         }
-        var definition = workflows.definitionBpmn(workflowKey, auth)
-                .orElseThrow(() -> new ApiException(404, "BPMN опубликованного процесса не найден"));
-        return object("key", definition.key(), "name", definition.name(), "bpmnXml", definition.bpmnXml(),
-                "publishedVersion", definition.publishedVersion(), "definitionId", definition.definitionId(), "deploymentId", definition.deploymentId());
+        throw new ApiException(404, "BPMN процесса не найден");
     }
     /** Выводит опубликованный процесс из эксплуатации, не удаляя его историю. */
     public JsonNode retireDraft(String key, AuthContext auth) {
