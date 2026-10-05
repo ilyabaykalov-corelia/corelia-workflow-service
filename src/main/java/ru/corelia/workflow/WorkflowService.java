@@ -40,13 +40,14 @@ public class WorkflowService implements WorkflowServiceTaskExecutor {
         designer(); requireDefinitionEdit(auth); var definitions = new TreeMap<String, WorkflowDefinition>();
         workflows.definitions(auth).forEach(value -> definitions.put(value.key(), value));
         if (drafts != null) for (var draft : drafts.all()) definitions.compute(draft.key(), (key, published) -> published == null
-                ? new WorkflowDefinition(draft.name(), draft.key(), 0, true, "DRAFT", null, null, 0)
+                ? new WorkflowDefinition(draft.name(), draft.key(), 0, true, "DRAFT", null, null, 0, null, null)
                 : new WorkflowDefinition(published.name(), published.key(), published.publishedVersion(), true, published.status(),
-                        published.lastPublishedAt(), published.publishedBy(), published.activeInstances()));
+                        published.lastPublishedAt(), published.publishedBy(), published.activeInstances(), published.definitionId(), published.deploymentId()));
         return object("editEnabled", designerEditEnabled, "items", definitions.values().stream().map(value -> object(
                 "name", value.name(), "key", value.key(), "publishedVersion", value.publishedVersion(),
                 "draft", value.draft(), "status", value.status(), "lastPublishedAt", value.lastPublishedAt() == null ? null : value.lastPublishedAt().toString(),
-                "publishedBy", value.publishedBy(), "activeInstances", value.activeInstances())).toList());
+                "publishedBy", value.publishedBy(), "activeInstances", value.activeInstances(),
+                "definitionId", value.definitionId(), "deploymentId", value.deploymentId())).toList());
     }
     public JsonNode createDraft(JsonNode body, AuthContext auth) {
         editable(); requireDefinitionEdit(auth);
@@ -62,17 +63,17 @@ public class WorkflowService implements WorkflowServiceTaskExecutor {
         if (drafts == null) throw new IllegalStateException("Не настроено хранилище workflow drafts");
         return draft(drafts.find(workflowKey(key)).orElseThrow(() -> new ApiException(404, "Черновик процесса не найден")));
     }
-    /** Открывает черновик для редактирования либо опубликованный BPMN только для просмотра. */
+    /** Открывает черновик либо опубликованный BPMN с неизменяемой identity его версии. */
     public JsonNode view(String key, AuthContext auth) {
         designer(); requireDefinitionEdit(auth);
         String workflowKey = workflowKey(key);
         if (drafts != null) {
             var existing = drafts.find(workflowKey);
-            if (existing.isPresent()) return view(existing.get().key(), existing.get().name(), existing.get().bpmnXml(), !designerEditEnabled);
+            if (existing.isPresent()) return view(existing.get().key(), existing.get().name(), existing.get().bpmnXml(), !designerEditEnabled, 0, null, null);
         }
         var definition = workflows.definitionBpmn(workflowKey, auth)
                 .orElseThrow(() -> new ApiException(404, "BPMN процесса не найден"));
-        return view(definition.key(), definition.name(), definition.bpmnXml(), true);
+        return view(definition.key(), definition.name(), definition.bpmnXml(), true, definition.publishedVersion(), definition.definitionId(), definition.deploymentId());
     }
     /** Возвращает доступную вызывающему пользователю runtime-статистику BPMN activity. */
     public JsonNode runtime(String key, AuthContext auth) {
@@ -109,17 +110,34 @@ public class WorkflowService implements WorkflowServiceTaskExecutor {
                 .map(error -> object("code", error.code(), "message", error.message())).toList());
     }
     /** Публикует сохранённый и проверенный BPMN как неизменяемую версию workflow provider. */
-    public JsonNode publishDraft(String key, AuthContext auth) {
+    public JsonNode publishDraft(String key, JsonNode body, AuthContext auth) {
         editable(); permissions.require("workflow-definition:publish", auth);
+        String workflowKey = workflowKey(key);
+        if (!first(body, "bpmnXml", "xml").isBlank()) return publishPublished(workflowKey, body, auth);
         if (drafts == null) throw new IllegalStateException("Не настроено хранилище workflow drafts");
-        var current = drafts.find(workflowKey(key)).orElseThrow(() -> new ApiException(404, "Черновик процесса не найден"));
+        var current = drafts.find(workflowKey).orElseThrow(() -> new ApiException(404, "Черновик процесса не найден"));
         var validation = workflows.validateDefinition(current.key(), current.bpmnXml(), auth);
         if (!validation.valid()) return object("published", false, "valid", false, "errors", validation.errors().stream()
                 .map(error -> object("code", error.code(), "message", error.message())).toList());
-        var definition = workflows.publishDefinition(current.key(), current.name(), current.bpmnXml(), auth);
+        int expectedVersion = workflows.definitionBpmn(current.key(), auth).map(WorkflowDefinitionBpmn::publishedVersion).orElse(0);
+        var definition = workflows.publishDefinition(current.key(), current.name(), current.bpmnXml(), expectedVersion, auth);
         drafts.audit(current.key(), "published", auth.login());
-        return object("published", true, "valid", true, "errors", List.of(), "key", definition.key(), "version", definition.publishedVersion(),
-                "publishedAt", definition.lastPublishedAt().toString());
+        return published(definition);
+    }
+    /** Публикует отредактированную опубликованную версию с optimistic-проверкой base version. */
+    private JsonNode publishPublished(String key, JsonNode body, AuthContext auth) {
+        String xml = first(body, "bpmnXml", "xml");
+        int expectedVersion = body.path("expectedPublishedVersion").asInt(-1);
+        if (expectedVersion < 1) throw new ApiException(400, "Не указана исходная опубликованная версия BPMN");
+        var current = workflows.definitionBpmn(key, auth)
+                .orElseThrow(() -> new ApiException(404, "BPMN опубликованного процесса не найден"));
+        String name = body.has("name") ? workflowName(text(body, "name")) : current.name();
+        var validation = workflows.validateDefinition(key, xml, auth);
+        if (!validation.valid()) return object("published", false, "valid", false, "errors", validation.errors().stream()
+                .map(error -> object("code", error.code(), "message", error.message())).toList());
+        var definition = workflows.publishDefinition(key, name, xml, expectedVersion, auth);
+        if (drafts != null) drafts.audit(key, "published", auth.login());
+        return published(definition);
     }
     /** Импортирует XML в существующий черновик без публикации процесса. */
     public JsonNode importDraft(String key, JsonNode body, AuthContext auth) {
@@ -128,12 +146,19 @@ public class WorkflowService implements WorkflowServiceTaskExecutor {
         if (drafts != null) drafts.audit(workflowKey(key), "imported", auth.login());
         return saved;
     }
-    /** Экспортирует сохранённый XML черновика для переноса между средами. */
+    /** Экспортирует текущий опубликованный BPMN либо XML ещё не опубликованного черновика. */
     public JsonNode exportDraft(String key, AuthContext auth) {
         designer(); requireDefinitionEdit(auth);
         if (drafts == null) throw new IllegalStateException("Не настроено хранилище workflow drafts");
-        var current = drafts.find(workflowKey(key)).orElseThrow(() -> new ApiException(404, "Черновик процесса не найден"));
-        return object("key", current.key(), "name", current.name(), "bpmnXml", current.bpmnXml());
+        String workflowKey = workflowKey(key);
+        if (drafts != null) {
+            var current = drafts.find(workflowKey);
+            if (current.isPresent()) return object("key", current.get().key(), "name", current.get().name(), "bpmnXml", current.get().bpmnXml());
+        }
+        var definition = workflows.definitionBpmn(workflowKey, auth)
+                .orElseThrow(() -> new ApiException(404, "BPMN опубликованного процесса не найден"));
+        return object("key", definition.key(), "name", definition.name(), "bpmnXml", definition.bpmnXml(),
+                "publishedVersion", definition.publishedVersion(), "definitionId", definition.definitionId(), "deploymentId", definition.deploymentId());
     }
     /** Выводит опубликованный процесс из эксплуатации, не удаляя его историю. */
     public JsonNode retireDraft(String key, AuthContext auth) {
@@ -256,7 +281,14 @@ public class WorkflowService implements WorkflowServiceTaskExecutor {
         return value;
     }
     private static JsonNode draft(WorkflowDraftRepository.Draft value) { return object("key", value.key(), "name", value.name(), "bpmnXml", value.bpmnXml(), "updatedAt", value.updatedAt().toString(), "updatedBy", value.updatedBy()); }
-    private static JsonNode view(String key, String name, String bpmnXml, boolean readOnly) { return object("key", key, "name", name, "bpmnXml", bpmnXml, "readOnly", readOnly); }
+    private static JsonNode view(String key, String name, String bpmnXml, boolean readOnly, int publishedVersion, String definitionId, String deploymentId) {
+        return object("key", key, "name", name, "bpmnXml", bpmnXml, "readOnly", readOnly,
+                "publishedVersion", publishedVersion, "definitionId", definitionId, "deploymentId", deploymentId);
+    }
+    private static JsonNode published(WorkflowDefinition definition) {
+        return object("published", true, "valid", true, "errors", List.of(), "key", definition.key(), "version", definition.publishedVersion(),
+                "publishedAt", definition.lastPublishedAt().toString(), "definitionId", definition.definitionId(), "deploymentId", definition.deploymentId());
+    }
     private static String emptyBpmn(String key, String name) { return """
             <?xml version="1.0" encoding="UTF-8"?>
             <bpmn:definitions xmlns:bpmn="http://www.omg.org/spec/BPMN/20100524/MODEL" xmlns:bpmndi="http://www.omg.org/spec/BPMN/20100524/DI" xmlns:dc="http://www.omg.org/spec/DD/20100524/DC" xmlns:corelia="urn:corelia:bpmn" targetNamespace="urn:corelia:bpmn">
