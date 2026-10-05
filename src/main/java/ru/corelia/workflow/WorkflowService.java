@@ -161,7 +161,8 @@ public class WorkflowService implements WorkflowServiceTaskExecutor {
         designer(); requireDefinitionEdit(auth);
         var source = workflows.runtime(workflowKey(key), auth);
         var documentsById = new HashMap<String, DocumentSnapshot>();
-        documents.search(new DocumentSearchRequest(null, 0, 10000), auth).items()
+        documents.search(new DocumentSearchRequest(null, 0, 10000), auth).items().stream()
+                .filter(document -> canRead(document.typeCode(), auth))
                 .forEach(document -> documentsById.put(document.typeCode() + "\\u0000" + document.id(), document));
         var instances = source.instances().stream()
                 .filter(instance -> documentsById.containsKey(instance.documentType() + "\\u0000" + instance.documentId()))
@@ -170,6 +171,17 @@ public class WorkflowService implements WorkflowServiceTaskExecutor {
         var counts = new TreeMap<String, Long>();
         instances.forEach(instance -> instance.instance().activityIds().forEach(activityId -> counts.merge(activityId, 1L, Long::sum)));
         return new VisibleRuntime(instances, counts);
+    }
+    private boolean canRead(String type, AuthContext auth) {
+        JsonNode authorization = types.definition(type).authorization();
+        String permission = text(authorization, "readPermission");
+        try {
+            permissions.require(permission.isEmpty() ? text(authorization, "editPermission") : permission, auth);
+            return true;
+        } catch (ApiException error) {
+            if (error.status() == 403) return false;
+            throw error;
+        }
     }
     public JsonNode process(String id, AuthContext auth) { return process(workflows.process(id, auth)); }
     public JsonNode create(JsonNode body, AuthContext auth) {
