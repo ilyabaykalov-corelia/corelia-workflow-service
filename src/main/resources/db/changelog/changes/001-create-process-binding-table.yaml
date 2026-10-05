@@ -1,0 +1,57 @@
+databaseChangeLog:
+  - changeSet:
+      id: workflow-001-create-process-binding
+      author: corelia
+      changes:
+        - createTable:
+            tableName: process_binding
+            columns:
+              - column:
+                  name: document_id
+                  type: VARCHAR(255)
+                  constraints:
+                    nullable: false
+              - column:
+                  name: document_type
+                  type: VARCHAR(128)
+                  constraints:
+                    nullable: false
+              - column:
+                  name: action
+                  type: VARCHAR(128)
+                  constraints:
+                    nullable: false
+              - column:
+                  name: idempotency_key
+                  type: VARCHAR(255)
+                  constraints:
+                    nullable: false
+              - column:
+                  name: process_instance_id
+                  type: VARCHAR(255)
+              - column:
+                  name: definition_key
+                  type: VARCHAR(255)
+                  constraints:
+                    nullable: false
+              - column:
+                  name: definition_version
+                  type: INT
+              - column:
+                  name: engine
+                  type: VARCHAR(64)
+                  constraints:
+                    nullable: false
+              - column:
+                  name: created_at
+                  type: TIMESTAMP WITH TIME ZONE
+                  constraints:
+                    nullable: false
+        - addPrimaryKey:
+            tableName: process_binding
+            columnNames: document_id, document_type, action, idempotency_key
+            constraintName: pk_process_binding
+        - addUniqueConstraint:
+            tableName: process_binding
+            columnNames: engine, process_instance_id
+            constraintName: uq_process_binding_engine_instance

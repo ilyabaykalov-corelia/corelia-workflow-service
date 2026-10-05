@@ -46,6 +46,41 @@ public class WorkflowController {
         return workflow.process(id, requests.auth(r));
     }
 
+    @GetMapping("/admin/workflows")
+    public JsonNode definitions(HttpServletRequest r) {
+        return workflow.definitions(requests.auth(r));
+    }
+
+    @PostMapping("/admin/workflows")
+    public JsonNode createDraft(HttpServletRequest r) { return workflow.createDraft(requests.body(r), requests.auth(r)); }
+
+    @GetMapping("/admin/workflows/{key}")
+    public JsonNode draft(@PathVariable String key, HttpServletRequest r) { return workflow.draft(key, requests.auth(r)); }
+
+    @GetMapping("/admin/workflows/{key}/view")
+    public JsonNode view(@PathVariable String key, HttpServletRequest r) { return workflow.view(key, requests.auth(r)); }
+
+    @PutMapping("/admin/workflows/{key}/draft")
+    public JsonNode saveDraft(@PathVariable String key, HttpServletRequest r) { return workflow.saveDraft(key, requests.body(r), requests.auth(r)); }
+
+    @PostMapping("/admin/workflows/{key}/validate")
+    public JsonNode validateDraft(@PathVariable String key, HttpServletRequest r) { return workflow.validateDraft(key, requests.auth(r)); }
+
+    @PostMapping("/admin/workflows/{key}/publish")
+    public JsonNode publishDraft(@PathVariable String key, HttpServletRequest r) { return workflow.publishDraft(key, requests.auth(r)); }
+
+    @PostMapping("/admin/workflows/{key}/retire")
+    public JsonNode retireDraft(@PathVariable String key, HttpServletRequest r) { return workflow.retireDraft(key, requests.auth(r)); }
+
+    @PostMapping("/admin/workflows/{key}/import")
+    public JsonNode importDraft(@PathVariable String key, HttpServletRequest r) { return workflow.importDraft(key, requests.body(r), requests.auth(r)); }
+
+    @GetMapping("/admin/workflows/{key}/export")
+    public JsonNode exportDraft(@PathVariable String key, HttpServletRequest r) { return workflow.exportDraft(key, requests.auth(r)); }
+
+    @GetMapping("/admin/workflows/{key}/audit")
+    public JsonNode audit(@PathVariable String key, HttpServletRequest r) { return workflow.audit(key, requests.auth(r)); }
+
     @PostMapping("/tasks/search")
     public JsonNode search(HttpServletRequest r) {
         return workflow.search(requests.body(r), requests.auth(r));

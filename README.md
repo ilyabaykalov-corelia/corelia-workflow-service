@@ -1,28 +1,20 @@
 # corelia-workflow-service
 
-Запуск процессов и выполнение действий по задачам BPMX/BPMU.
+Внутренний сервис процессов и задач. Использует `corelia-provider-flowable`
+для deploy/start/read BPMN definitions, поиска/claim/complete задач и
+административного lifecycle definition. Не владеет правилами изменения
+документа и вызывает document/data contracts только как участник orchestration.
 
-Java 25, Spring Boot 4.0.8, Maven. Комментарии и документация — на русском языке.
-
-## Сборка и запуск
-
-Это отдельный Git-репозиторий сервиса внутри рабочего каталога Corelia. Для сборки пока требуются соседний родительский `corelia-parent` и библиотеки corelia-platform-v и corelia-common. Из каталога сервиса:
+База `corelia_workflow` принадлежит сервису; Liquibase master —
+`classpath:db/changelog/workflow-master.yaml`. Flowable schema creation
+управляется `CORELIA_FLOWABLE_DATABASE_SCHEMA_UPDATE` и должна выполняться
+одним экземпляром до масштабирования.
 
 ```bash
-mvn -f ../pom.xml -pl corelia-workflow-service -am package -DskipTests
+mvn -pl corelia-workflow-service -am test
+./scripts/up.sh
 ```
 
-Локальное окружение запускается из общей папки Corelia командой `./scripts/up.sh`. Сертификаты и адреса сервисов настраиваются через Compose и переменные окружения. Секреты и результаты сборки в репозиторий не включаются.
-
-Для сборки отдельно от общей папки потребуется публикация родительского POM и библиотек в Maven-репозиторий. Общая Docker-конфигурация находится в родительском репозитории Corelia.
-
-## Документация рабочего окружения
-
-- [Архитектура](../docs/architecture.md)
-- [API](../docs/api.md)
-- [Локальная эксплуатация](../docs/operations.md)
-
-Правила изменения документов принадлежат document-service; постоянное хранение находится в DataSpace/DAM, существующие процессы исполняются платформой. Системные тесты взаимодействия находятся в соседнем модуле `corelia-system-tests`.
-# Документация
-
-Процессы, tasks и граница ответственности workflow-service описаны в [docs/README.md](docs/README.md).
+Требуются mTLS, customer configuration с Flowable bindings/BPMN и native
+permissions provider. Внешний API проксирует gateway; детали —
+[../docs/api.md](../docs/api.md).
